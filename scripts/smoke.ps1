@@ -22,7 +22,7 @@ $null = New-Item -ItemType Directory -Path $authDirectory, $pluginDirectory, $te
 
 if ($LibraryPath) {
     $library = Get-Item -LiteralPath $LibraryPath -ErrorAction Stop
-    if ($library.PSIsContainer -or $library.Name -notmatch '^cliproxy-account-warmup\.(dll|so|dylib)$') {
+    if ($library.PSIsContainer -or $library.Name -notmatch '^cpa-account-warmup\.(dll|so|dylib)$') {
         throw 'LibraryPath must point to a built Account Warmup plugin library.'
     }
 }
@@ -31,7 +31,7 @@ else {
     if ($Compiler) { $buildArguments.Compiler = $Compiler }
     & (Join-Path $PSScriptRoot 'build.ps1') @buildArguments
     $libraryFiles = @(Get-ChildItem -LiteralPath $buildArguments.OutputDirectory -Recurse -File |
-        Where-Object { $_.Name -match '^cliproxy-account-warmup\.(dll|so|dylib)$' })
+        Where-Object { $_.Name -match '^cpa-account-warmup\.(dll|so|dylib)$' })
     if ($libraryFiles.Count -ne 1) { throw 'The build did not produce exactly one plugin library.' }
     $library = $libraryFiles[0]
 }
@@ -68,7 +68,7 @@ plugins:
   enabled: true
   dir: $($pluginDirectory | ConvertTo-Json -Compress)
   configs:
-    cliproxy-account-warmup:
+    cpa-account-warmup:
       enabled: true
       record_usage: $($RecordUsage.IsPresent.ToString().ToLowerInvariant())
       core_url: '$baseURL'
@@ -187,7 +187,7 @@ try {
 
     $listing = Invoke-SmokeRequest -Path '/v8/management/plugins' -Authenticated
     Assert-Status $listing 200 'Authenticated plugin listing'
-    $registered = @(($listing.Body | ConvertFrom-Json).plugins | Where-Object { $_.id -eq 'cliproxy-account-warmup' })
+    $registered = @(($listing.Body | ConvertFrom-Json).plugins | Where-Object { $_.id -eq 'cpa-account-warmup' })
     if ($registered.Count -ne 1 -or -not $registered[0].registered -or -not $registered[0].effective_enabled) {
         throw 'The plugin was not registered and enabled by the native host.'
     }
@@ -201,7 +201,7 @@ try {
         Assert-Status (Invoke-SmokeRequest -Path '/v1/models' -Token $inferenceKey) 200 'Ordinary API keys still work'
         $forgedTicket = 'cpa-warmup.' + ('a' * 64)
         $ticketHeaders = @{ 'X-CLIProxyAPI-Warmup-Ticket' = $forgedTicket }
-        $reservedRequest = '{"model":"cliproxy-account-warmup-internal","input":"Reply OK","stream":false}'
+        $reservedRequest = '{"model":"cpa-account-warmup-internal","input":"Reply OK","stream":false}'
         Assert-Status (Invoke-SmokeRequest -Path '/v1/responses' -Method POST -Token $forgedTicket -ExtraHeaders $ticketHeaders -Body $reservedRequest) 401 'Forged warmup authentication is rejected'
         Assert-Status (Invoke-SmokeRequest -Path '/v1/responses' -Method POST -Token $inferenceKey -ExtraHeaders $ticketHeaders -Body $reservedRequest) 403 'A regular API key cannot forge a warmup ticket'
     }
@@ -209,7 +209,7 @@ try {
         Assert-Status (Invoke-SmokeRequest -Path '/v1/models') 200 'Anonymous API access is preserved without Usage recording'
     }
 
-    $resourceBase = '/v0/resource/plugins/cliproxy-account-warmup'
+    $resourceBase = '/v0/resource/plugins/cpa-account-warmup'
     $launchPath = [string]$registered[0].menus[0].path
     if ($launchPath -cnotmatch ('^' + [regex]::Escape($resourceBase) + '/launch/([0-9]+)/([a-f0-9]{64})$')) {
         throw 'The plugin menu did not expose a valid launch capability.'
@@ -297,7 +297,7 @@ try {
     $checks.Add('Local session reads the isolated empty account state')
     Assert-Status (Invoke-SmokeRequest @localArguments -Path '/api/warmup' -Method POST -Token $sessionToken -Body '{"provider":"all"}') 400 'Local invalid warmup is rejected without a model request'
 
-    $apiBase = '/v0/management/plugins/cliproxy-account-warmup'
+    $apiBase = '/v0/management/plugins/cpa-account-warmup'
     Assert-Status (Invoke-SmokeRequest -Path "$apiBase/state") 401 'State requires authentication'
     Assert-Status (Invoke-SmokeRequest -Path "$apiBase/warmup" -Method POST -Body '{}') 401 'Warmup requires authentication'
     $stateResponse = Invoke-SmokeRequest -Path "$apiBase/state" -Authenticated

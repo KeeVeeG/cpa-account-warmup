@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"cliproxy-account-warmup/internal/warmup"
+	"cpa-account-warmup/internal/warmup"
 )
 
 type executionTestHost struct {

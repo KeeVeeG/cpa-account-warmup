@@ -15,14 +15,14 @@ import (
 	"sync"
 	"time"
 
-	"cliproxy-account-warmup/internal/warmup"
+	"cpa-account-warmup/internal/warmup"
 )
 
 const (
 	defaultCoreURL   = "http://127.0.0.1:8317"
 	executionHeader  = "X-CLIProxyAPI-Warmup-Ticket"
 	executionPrefix  = "cpa-warmup."
-	executionModel   = "cliproxy-account-warmup-internal"
+	executionModel   = "cpa-account-warmup-internal"
 	ticketLifetime   = 30 * time.Second
 	maxTickets       = 64
 	maxResponseBody  = 1 << 20

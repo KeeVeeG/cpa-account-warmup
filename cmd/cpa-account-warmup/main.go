@@ -1,4 +1,4 @@
-// Command cliproxy-account-warmup builds a native CLIProxyAPI plugin.
+// Command cpa-account-warmup builds a native CLIProxyAPI plugin.
 package main
 
 /*
@@ -12,7 +12,7 @@ import (
 	"sync"
 	"unsafe"
 
-	"cliproxy-account-warmup/internal/plugin"
+	"cpa-account-warmup/internal/plugin"
 )
 
 const maxRPCBytes = 16 << 20

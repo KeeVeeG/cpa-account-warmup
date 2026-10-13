@@ -13,11 +13,11 @@ import (
 	"strings"
 	"sync"
 
-	"cliproxy-account-warmup/internal/warmup"
+	"cpa-account-warmup/internal/warmup"
 	"gopkg.in/yaml.v3"
 )
 
-const ID = "cliproxy-account-warmup"
+const ID = "cpa-account-warmup"
 const Version = "0.4.0"
 const APIBase = "/v0/management/plugins/" + ID
 const ResourceBase = "/v0/resource/plugins/" + ID

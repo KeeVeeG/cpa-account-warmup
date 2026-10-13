@@ -1,7 +1,7 @@
 "use strict";
 
 (() => {
-  const match = /^\/v0\/resource\/plugins\/cliproxy-account-warmup\/launch\/([1-9][0-9]{0,4})\/([a-f0-9]{64})$/.exec(
+  const match = /^\/v0\/resource\/plugins\/cpa-account-warmup\/launch\/([1-9][0-9]{0,4})\/([a-f0-9]{64})$/.exec(
     window.location.pathname,
   );
   if (!match || Number(match[1]) > 65535 || window.location.search || window.location.hash) {

@@ -48,14 +48,14 @@ case "$target_os" in
 esac
 
 platform_directory="$output_directory/$target_os-$target_arch"
-library_name="cliproxy-account-warmup.$extension"
-archive_path="$output_directory/cliproxy-account-warmup_${version}_${target_os}_${target_arch}.zip"
+library_name="cpa-account-warmup.$extension"
+archive_path="$output_directory/cpa-account-warmup_${version}_${target_os}_${target_arch}.zip"
 mkdir -p -- "$platform_directory"
 build_arguments=(-trimpath -buildmode=c-shared)
 if [[ -n "$repository_url" ]]; then
-    build_arguments+=(-ldflags "-X=cliproxy-account-warmup/internal/plugin.RepositoryURL=$repository_url")
+    build_arguments+=(-ldflags "-X=cpa-account-warmup/internal/plugin.RepositoryURL=$repository_url")
 fi
-CGO_ENABLED=1 go build "${build_arguments[@]}" -o "$platform_directory/$library_name" ./cmd/cliproxy-account-warmup
+CGO_ENABLED=1 go build "${build_arguments[@]}" -o "$platform_directory/$library_name" ./cmd/cpa-account-warmup
 (
     cd -- "$platform_directory"
     "${checksum_command[@]}" "$library_name" > checksums.txt
@@ -72,6 +72,6 @@ rm -f -- "$archive_path"
 zip -q -j "$archive_path" "${archive_files[@]}"
 (
     cd -- "$output_directory"
-    "${checksum_command[@]}" cliproxy-account-warmup_"${version}"_*.zip > checksums.txt
+    "${checksum_command[@]}" cpa-account-warmup_"${version}"_*.zip > checksums.txt
 )
 printf 'Built %s\nPackaged %s\n' "$platform_directory/$library_name" "$archive_path"

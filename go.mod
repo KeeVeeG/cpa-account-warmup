@@ -1,4 +1,4 @@
-module cliproxy-account-warmup
+module cpa-account-warmup
 
 go 1.26.0
 

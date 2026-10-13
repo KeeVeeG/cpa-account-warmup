@@ -8,15 +8,15 @@ Defaults: `claude-haiku-5-5` with thinking disabled and `gpt-6-luna` with low re
 
 Requires a local CLIProxyAPI **8.0.27+** core with native plugin support. Tested against 8.0.27.
 
-1. Download the ZIP for your OS and architecture from [Releases](https://github.com/KeeVeeG/cliproxy-account-warmup/releases/latest), then stop the core in EasyCLIProxyAPI.
-2. Copy the library into the core's plugin directory. On Windows x64: `cpa-core/plugins/windows/amd64/cliproxy-account-warmup.dll`. Keep this filename without a version suffix.
+1. Download the ZIP for your OS and architecture from [Releases](https://github.com/KeeVeeG/cpa-account-warmup/releases/latest), then stop the core in EasyCLIProxyAPI.
+2. Copy the library into the core's plugin directory. On Windows x64: `cpa-core/plugins/windows/amd64/cpa-account-warmup.dll`. Keep this filename without a version suffix.
 3. Merge this entry into your existing configuration:
 
    ```yaml
    plugins:
      enabled: true
      configs:
-       cliproxy-account-warmup:
+       cpa-account-warmup:
          enabled: true
          claude_model: claude-haiku-5-5
          codex_model: gpt-6-luna

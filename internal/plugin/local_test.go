@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"cliproxy-account-warmup/internal/warmup"
+	"cpa-account-warmup/internal/warmup"
 )
 
 func registeredServer(t *testing.T, host warmup.Host) *Server {

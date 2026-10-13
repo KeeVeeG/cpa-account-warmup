@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: cliproxy-account-warmup-*
+          pattern: cpa-account-warmup-*
           path: release
           merge-multiple: true
       - name: Check release assets and create checksums
@@ -38,7 +38,7 @@ jobs:
           platforms=(darwin_amd64 darwin_arm64 linux_amd64 linux_arm64 windows_amd64)
           archives=()
           for platform in "${platforms[@]}"; do
-            archive="cliproxy-account-warmup_${version}_${platform}.zip"
+            archive="cpa-account-warmup_${version}_${platform}.zip"
             test -f "$archive"
             archives+=("$archive")
           done

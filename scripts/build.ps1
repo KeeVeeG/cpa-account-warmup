@@ -52,13 +52,13 @@ try {
         }
         $platformDirectory = Join-Path $outputPath "$targetOS-$targetArch"
         $null = New-Item -ItemType Directory -Path $platformDirectory -Force
-        $libraryName = "cliproxy-account-warmup.$extension"
+        $libraryName = "cpa-account-warmup.$extension"
         $libraryPath = Join-Path $platformDirectory $libraryName
         $buildArguments = @('build', '-trimpath', '-buildmode=c-shared')
         if ($RepositoryURL) {
-            $buildArguments += @('-ldflags', "-X=cliproxy-account-warmup/internal/plugin.RepositoryURL=$RepositoryURL")
+            $buildArguments += @('-ldflags', "-X=cpa-account-warmup/internal/plugin.RepositoryURL=$RepositoryURL")
         }
-        Invoke-Go -Arguments ($buildArguments + @('-o', $libraryPath, './cmd/cliproxy-account-warmup'))
+        Invoke-Go -Arguments ($buildArguments + @('-o', $libraryPath, './cmd/cpa-account-warmup'))
 
         $libraryHash = (Get-FileHash -LiteralPath $libraryPath -Algorithm SHA256).Hash.ToLowerInvariant()
         $packageChecksums = Join-Path $platformDirectory 'checksums.txt'
@@ -70,10 +70,10 @@ try {
                 $archiveFiles += $documentPath
             }
         }
-        $archivePath = Join-Path $outputPath "cliproxy-account-warmup_${version}_${targetOS}_${targetArch}.zip"
+        $archivePath = Join-Path $outputPath "cpa-account-warmup_${version}_${targetOS}_${targetArch}.zip"
         Compress-Archive -LiteralPath $archiveFiles -DestinationPath $archivePath -CompressionLevel Optimal -Force
 
-        $archiveChecksumLines = @(Get-ChildItem -LiteralPath $outputPath -Filter "cliproxy-account-warmup_${version}_*.zip" -File |
+        $archiveChecksumLines = @(Get-ChildItem -LiteralPath $outputPath -Filter "cpa-account-warmup_${version}_*.zip" -File |
             Sort-Object Name | ForEach-Object {
                 $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
                 "$hash  $($_.Name)"
