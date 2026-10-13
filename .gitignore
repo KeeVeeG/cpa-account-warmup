@@ -1,0 +1,16 @@
+/dist/
+/work/
+*.dll
+*.so
+*.dylib
+*.test
+*.test.exe
+/coverage.out
+/coverage.html
+*.log
+.env
+.env.*
+!.env.example
+/config.local.json
+.DS_Store
+Thumbs.db
