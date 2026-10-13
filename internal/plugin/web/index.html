@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="light dark" />
     <meta name="referrer" content="no-referrer" />
     <meta
       http-equiv="Content-Security-Policy"
@@ -66,19 +66,7 @@
           aria-controls="claude-panel"
           data-provider-tab="claude"
         >
-          <svg
-            class="provider-icon claude-icon"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.7"
-            stroke-linecap="round"
-            aria-hidden="true"
-          >
-            <path
-              d="M12 2v6m0 8v6M2 12h6m8 0h6M5 5l4.3 4.3m5.4 5.4L19 19M5 19l4.3-4.3m5.4-5.4L19 5"
-            />
-          </svg>
+          <img class="provider-icon" src="./claude.svg" alt="" />
           Claude <span class="account-count">0</span>
         </button>
         <button
@@ -90,19 +78,7 @@
           tabindex="-1"
           data-provider-tab="codex"
         >
-          <svg
-            class="provider-icon codex-icon"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.7"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <rect x="3" y="3" width="18" height="18" rx="4" />
-            <path d="m7 8 3 4-3 4m6 0h4" />
-          </svg>
+          <img class="provider-icon" src="./codex.svg" alt="" />
           Codex <span class="account-count">0</span>
         </button>
       </div>
@@ -118,7 +94,7 @@
           <div class="provider-details">
             <div class="model-line">
               <span class="model-value">claude-haiku-5-5</span
-              ><span class="model-effort">Thinking off · 1 output token</span>
+              ><span class="model-effort">Thinking off · 1-token limit</span>
             </div>
             <div class="selection-bar">
               <span class="selection-count">No accounts loaded</span>
@@ -169,7 +145,7 @@
           <div class="provider-details">
             <div class="model-line">
               <span class="model-value">gpt-6-luna</span
-              ><span class="model-effort">Reasoning off</span>
+              ><span class="model-effort">Low reasoning</span>
             </div>
             <div class="selection-bar">
               <span class="selection-count">No accounts loaded</span>
@@ -237,10 +213,7 @@
           ></span>
           <input class="account-checkbox" type="checkbox" />
         </span>
-        <span class="account-meta"
-          ><span class="account-status"></span
-          ><time class="account-time" hidden></time
-        ></span>
+        <span class="account-meta"><span class="account-status"></span></span>
         <span class="account-detail"></span>
       </label>
     </template>

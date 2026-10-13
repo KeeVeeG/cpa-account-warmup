@@ -7,6 +7,24 @@ import (
 	"testing"
 )
 
+func TestRandomWarmupPromptUsesSmallIntegerArithmetic(t *testing.T) {
+	for range 64 {
+		if prompt := randomWarmupPrompt(); !isArithmeticWarmupPrompt(prompt) {
+			t.Fatalf("invalid arithmetic prompt: %q", prompt)
+		}
+	}
+}
+
+func isArithmeticWarmupPrompt(prompt string) bool {
+	if len(prompt) == 5 && prompt[1] == ' ' && prompt[3] == ' ' {
+		prompt = strings.ReplaceAll(prompt, " ", "")
+	}
+	if len(prompt) != 3 || prompt[0] < '1' || prompt[0] > '9' || prompt[2] < '1' || prompt[2] > '9' || !strings.ContainsRune("+-*/", rune(prompt[1])) {
+		return false
+	}
+	return prompt[1] != '/' || (prompt[0]-'0')%(prompt[2]-'0') == 0
+}
+
 func TestBuildModelRequestPinsProviderAccountAndModel(t *testing.T) {
 	for _, test := range []struct{ provider, model, protocol string }{
 		{"claude", "claude-haiku-5-5", "claude"},
@@ -61,7 +79,7 @@ func TestBuildModelRequestBoundsClaudeAndUsesSupportedCodexFields(t *testing.T) 
 	if err := json.Unmarshal(claude.Body, &claudeBody); err != nil {
 		t.Fatal(err)
 	}
-	if claudeBody.Model != "claude-haiku-5-5" || claudeBody.MaxTokens != 1 || claudeBody.Thinking.Type != "disabled" || len(claudeBody.OutputConfig) != 0 || len(claudeBody.Messages) != 1 || claudeBody.Messages[0].Role != "user" || claudeBody.Messages[0].Content != "Reply OK" {
+	if claudeBody.Model != "claude-haiku-5-5" || claudeBody.MaxTokens != 1 || claudeBody.Thinking.Type != "disabled" || len(claudeBody.OutputConfig) != 0 || len(claudeBody.Messages) != 1 || claudeBody.Messages[0].Role != "user" || !isArithmeticWarmupPrompt(claudeBody.Messages[0].Content) {
 		t.Fatalf("unexpected Claude generation budget: %s", claude.Body)
 	}
 	if http.Header(claude.Headers).Get("X-OpenAI-Internal-Codex-Responses-Lite") != "" {
@@ -84,10 +102,14 @@ func TestBuildModelRequestBoundsClaudeAndUsesSupportedCodexFields(t *testing.T) 
 	if codexBody["store"] != false || codexBody["stream"] != false || codexBody["tool_choice"] != "none" || codexBody["model"] != "gpt-6-luna" {
 		t.Fatalf("unexpected Codex request: %s", codex.Body)
 	}
-	if effort := codexBody["reasoning"].(map[string]any)["effort"]; effort != "none" {
-		t.Fatalf("warmup should disable reasoning: %v", effort)
+	if effort := codexBody["reasoning"].(map[string]any)["effort"]; effort != "low" {
+		t.Fatalf("warmup should request low reasoning: %v", effort)
 	}
-	if codexBody["input"] != "Reply OK" || codexBody["instructions"] != "" || codexBody["text"].(map[string]any)["verbosity"] != "low" {
+	if context := codexBody["reasoning"].(map[string]any)["context"]; context != "all_turns" {
+		t.Fatalf("Codex Lite requires all_turns context: %v", context)
+	}
+	prompt, ok := codexBody["input"].(string)
+	if !ok || !isArithmeticWarmupPrompt(prompt) || codexBody["instructions"] != "" || codexBody["text"].(map[string]any)["verbosity"] != "low" {
 		t.Fatalf("warmup should contain one short prompt: %s", codex.Body)
 	}
 	if http.Header(codex.Headers).Get("X-OpenAI-Internal-Codex-Responses-Lite") != "true" {

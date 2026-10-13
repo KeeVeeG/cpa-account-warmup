@@ -1,11 +1,12 @@
 package plugin
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,21 +31,26 @@ func sessionToken(t *testing.T, server *Server) string {
 	response := server.management(managementRequest{
 		Method: http.MethodGet, Path: ResourceBase + server.local.launchPath,
 	})
-	if response.StatusCode != http.StatusFound {
+	if response.StatusCode != http.StatusOK || response.Headers.Get("Location") != "" {
 		t.Fatalf("Launch returned %d", response.StatusCode)
 	}
-	destination, err := url.Parse(response.Headers.Get("Location"))
-	if err != nil || destination.Scheme+"://"+destination.Host != server.local.origin || destination.Path != "/" {
-		t.Fatal("Launch did not redirect to the local interface")
+	capability := launchCapability(server)
+	response = server.local.handle(localRequest(server, "POST", "/api/session", capability, ""))
+	var session struct {
+		Token string `json:"session_token"`
 	}
-	values, err := url.ParseQuery(destination.Fragment)
-	if err != nil || len(values.Get("session")) != 64 {
-		t.Fatal("Launch did not return a session fragment")
+	if err := json.Unmarshal(response.Body, &session); err != nil || response.StatusCode != 200 || len(session.Token) != 64 {
+		t.Fatalf("Session exchange failed: status=%d body=%s", response.StatusCode, response.Body)
 	}
-	if destination.RawQuery != "" || response.Headers.Get("Referrer-Policy") != "no-referrer" || response.Headers.Get("Cache-Control") != "no-store" {
-		t.Fatal("Launch must not expose the session in a query or cached response")
+	if session.Token == capability || response.Headers.Get("Referrer-Policy") != "no-referrer" || response.Headers.Get("Cache-Control") != "no-store" {
+		t.Fatal("Session exchange did not protect its temporary credential")
 	}
-	return values.Get("session")
+	return session.Token
+}
+
+func launchCapability(server *Server) string {
+	parts := strings.Split(server.local.launchPath, "/")
+	return parts[len(parts)-1]
 }
 
 func localRequest(server *Server, method, path, token, body string) *http.Request {
@@ -54,6 +60,7 @@ func localRequest(server *Server, method, path, token, body string) *http.Reques
 	}
 	request.Header.Set("Origin", server.local.origin)
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Sec-Fetch-Site", "same-origin")
 	return request
 }
 
@@ -106,7 +113,8 @@ func TestLaunchCapabilityDoesNotReadOrWarmAccounts(t *testing.T) {
 			continue
 		}
 		menus++
-		if resource.Path != server.local.launchPath || len(strings.TrimPrefix(resource.Path, "/launch/")) != 64 {
+		parts := strings.Split(resource.Path, "/")
+		if resource.Path != server.local.launchPath || len(parts) != 4 || parts[1] != "launch" || parts[2] != strings.TrimPrefix(server.local.address, "127.0.0.1:") || len(parts[3]) != 64 {
 			t.Fatal("Menu does not use an unguessable launch path")
 		}
 	}
@@ -117,7 +125,7 @@ func TestLaunchCapabilityDoesNotReadOrWarmAccounts(t *testing.T) {
 	if first == second {
 		t.Fatal("Opening another tab reused its session")
 	}
-	for _, path := range []string{"/status", "/app.js", "/styles.css", "/launch/wrong"} {
+	for _, path := range []string{"/status", "/bootstrap.js", "/app.js", "/styles.css", "/claude.svg", "/codex.svg", "/launch/wrong"} {
 		response := server.management(managementRequest{Method: "GET", Path: ResourceBase + path})
 		if strings.Contains(string(response.Body), first) || strings.Contains(string(response.Body), server.local.launchPath) || response.Headers.Get("Location") != "" {
 			t.Fatal("A stable public resource disclosed a capability")
@@ -206,8 +214,80 @@ func TestSessionsExpireAndStayBounded(t *testing.T) {
 		t.Fatal("Expired session was accepted")
 	}
 	server.Close()
-	if len(server.local.sessions) != 0 || server.local.launch().StatusCode != 503 {
+	if len(server.local.sessions) != 0 || server.local.createSession(launchCapability(server)).StatusCode != 401 {
 		t.Fatal("Shutdown did not invalidate sessions and launch capability")
+	}
+}
+
+func TestLaunchResourcesAreStaticAcrossInstancesAndDoNotChangeSessions(t *testing.T) {
+	firstHost, secondHost := &testHost{}, &testHost{}
+	first := registeredServer(t, firstHost)
+	second := registeredServer(t, secondHost)
+	if first.local.launchPath == second.local.launchPath {
+		t.Fatal("Different plugin instances reused a capability")
+	}
+	key := sha256.Sum256([]byte("expired session"))
+	expired := time.Now().Add(-time.Hour)
+	first.local.sessions[key] = expired
+	want, err := assets.ReadFile("web/bootstrap.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, server := range []*Server{first, second, first} {
+		response := server.management(managementRequest{Method: "GET", Path: ResourceBase + server.local.launchPath})
+		if response.StatusCode != 200 || !bytes.Equal(response.Body, want) || response.Headers.Get("Location") != "" {
+			t.Fatal("Launch resource changed its embedded bytes or redirected dynamically")
+		}
+		if strings.Contains(string(response.Body), launchCapability(server)) || strings.Contains(string(response.Body), server.local.address) {
+			t.Fatal("Launch resource embedded runtime credentials or an address")
+		}
+	}
+	if len(first.local.sessions) != 1 || !first.local.sessions[key].Equal(expired) || len(second.local.sessions) != 0 || firstHost.calls != 0 || secondHost.calls != 0 {
+		t.Fatal("Reading a public resource changed runtime state or called the host")
+	}
+}
+
+func TestSessionExchangeRejectsUntrustedRequestsAndPreservesScopes(t *testing.T) {
+	host := &testHost{}
+	server := registeredServer(t, host)
+	other := registeredServer(t, &testHost{})
+	capability := launchCapability(server)
+	session := sessionToken(t, server)
+	for _, test := range []struct {
+		name   string
+		change func(*http.Request)
+		status int
+	}{
+		{"GET", func(r *http.Request) { r.Method = "GET" }, 405},
+		{"missing origin", func(r *http.Request) { r.Header.Del("Origin") }, 403},
+		{"foreign origin", func(r *http.Request) { r.Header.Set("Origin", "https://example.com") }, 403},
+		{"duplicate origin", func(r *http.Request) { r.Header.Add("Origin", server.local.origin) }, 403},
+		{"missing fetch site", func(r *http.Request) { r.Header.Del("Sec-Fetch-Site") }, 403},
+		{"same site", func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "same-site") }, 403},
+		{"cross site", func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "cross-site") }, 403},
+		{"wrong host", func(r *http.Request) { r.Host = "localhost:" + strings.TrimPrefix(server.local.address, "127.0.0.1:") }, 403},
+		{"query", func(r *http.Request) { r.URL.RawQuery = "bootstrap=" + capability }, 400},
+		{"body", func(r *http.Request) { r.Body = io.NopCloser(strings.NewReader("{}")) }, 400},
+		{"missing capability", func(r *http.Request) { r.Header.Del("Authorization") }, 401},
+		{"wrong capability", func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+strings.Repeat("0", 64)) }, 401},
+		{"other instance", func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+launchCapability(other)) }, 401},
+		{"session as capability", func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+session) }, 401},
+		{"duplicate authorization", func(r *http.Request) { r.Header.Add("Authorization", "Bearer "+capability) }, 401},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := localRequest(server, "POST", "/api/session", capability, "")
+			test.change(request)
+			response := server.local.handle(request)
+			if response.StatusCode != test.status || response.Headers.Get("Access-Control-Allow-Origin") != "" || len(server.local.sessions) != 1 {
+				t.Fatalf("Untrusted session exchange: status=%d sessions=%d", response.StatusCode, len(server.local.sessions))
+			}
+		})
+	}
+	if response := server.local.handle(localRequest(server, "GET", "/api/state", capability, "")); response.StatusCode != 401 {
+		t.Fatal("A bootstrap capability authorized an account action")
+	}
+	if host.calls != 0 {
+		t.Fatal("Session exchange called the native host")
 	}
 }
 

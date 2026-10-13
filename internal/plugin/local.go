@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,16 +22,17 @@ const (
 )
 
 type localServer struct {
-	plugin     *Server
-	http       *http.Server
-	address    string
-	origin     string
-	launchPath string
-	done       chan struct{}
-	mu         sync.Mutex
-	closed     bool
-	sessions   map[[32]byte]time.Time
-	now        func() time.Time
+	plugin        *Server
+	http          *http.Server
+	address       string
+	origin        string
+	launchPath    string
+	bootstrapHash [32]byte
+	done          chan struct{}
+	mu            sync.Mutex
+	closed        bool
+	sessions      map[[32]byte]time.Time
+	now           func() time.Time
 }
 
 func (s *Server) startLocal() error {
@@ -51,10 +54,11 @@ func (s *Server) startLocal() error {
 	}
 	local := &localServer{
 		plugin: s, address: listener.Addr().String(),
-		launchPath: "/launch/" + capability,
-		done:       make(chan struct{}),
-		sessions:   make(map[[32]byte]time.Time),
-		now:        time.Now,
+		launchPath:    "/launch/" + strconv.Itoa(listener.Addr().(*net.TCPAddr).Port) + "/" + capability,
+		bootstrapHash: sha256.Sum256([]byte(capability)),
+		done:          make(chan struct{}),
+		sessions:      make(map[[32]byte]time.Time),
+		now:           time.Now,
 	}
 	local.origin = "http://" + local.address
 	local.http = &http.Server{
@@ -79,11 +83,13 @@ func (s *Server) Close() {
 		s.closed = true
 		local := s.local
 		s.mu.Unlock()
+		s.history.close()
 		if local == nil {
 			return
 		}
 		local.mu.Lock()
 		local.closed = true
+		local.bootstrapHash = [32]byte{}
 		clear(local.sessions)
 		local.mu.Unlock()
 		_ = local.http.Shutdown(context.Background())
@@ -99,13 +105,14 @@ func randomToken() (string, error) {
 	return hex.EncodeToString(token[:]), nil
 }
 
-// The host exposes this unguessable launch path only through authenticated
-// plugin discovery. Opening it grants access to this plugin, not management.
-func (l *localServer) launch() managementResponse {
+// Session creation belongs to the loopback API. The core's resource routes
+// serve embedded files only and do not create or refresh sessions.
+func (l *localServer) createSession(capability string) managementResponse {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.closed {
-		return jsonResponse(503, map[string]string{"error": "Account Warmup is closed."})
+	hash := sha256.Sum256([]byte(capability))
+	if l.closed || len(capability) != 64 || subtle.ConstantTimeCompare(hash[:], l.bootstrapHash[:]) != 1 {
+		return jsonResponse(401, map[string]string{"error": "Reopen Account Warmup from the Plugins menu."})
 	}
 	now := l.now()
 	for token, expires := range l.sessions {
@@ -128,9 +135,7 @@ func (l *localServer) launch() managementResponse {
 		return jsonResponse(503, map[string]string{"error": "Could not open Account Warmup."})
 	}
 	l.sessions[sha256.Sum256([]byte(token))] = now.Add(sessionLifetime)
-	headers := responseHeaders("text/plain; charset=utf-8")
-	headers.Set("Location", l.origin+"/#session="+token)
-	return managementResponse{StatusCode: http.StatusFound, Headers: headers}
+	return jsonResponse(http.StatusOK, map[string]string{"session_token": token})
 }
 
 func (l *localServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -152,7 +157,35 @@ func (l *localServer) handle(r *http.Request) managementResponse {
 			return assetResponse("app.js", "text/javascript; charset=utf-8")
 		case "/styles.css":
 			return assetResponse("styles.css", "text/css; charset=utf-8")
+		case "/claude.svg", "/codex.svg":
+			return assetResponse(strings.TrimPrefix(r.URL.Path, "/"), "image/svg+xml")
 		}
+	}
+	if r.URL.Path == "/api/session" {
+		if r.Method != http.MethodPost {
+			return jsonResponse(405, map[string]string{"error": "Method not allowed."})
+		}
+		if origin, ok := oneHeader(r.Header, "Origin"); !ok || origin != l.origin {
+			return jsonResponse(403, map[string]string{"error": "A same-origin session request is required."})
+		}
+		if site, ok := oneHeader(r.Header, "Sec-Fetch-Site"); !ok || site != "same-origin" {
+			return jsonResponse(403, map[string]string{"error": "A same-origin session request is required."})
+		}
+		if r.URL.RawQuery != "" || r.URL.ForceQuery {
+			return jsonResponse(400, map[string]string{"error": "Session requests must not contain a query."})
+		}
+		if r.Body != nil {
+			body, err := io.ReadAll(io.LimitReader(r.Body, 1))
+			if err != nil || len(body) != 0 {
+				return jsonResponse(400, map[string]string{"error": "Session requests must have an empty body."})
+			}
+		}
+		authorization, single := oneHeader(r.Header, "Authorization")
+		scheme, capability, ok := strings.Cut(authorization, " ")
+		if !single || !ok || !strings.EqualFold(scheme, "Bearer") {
+			return jsonResponse(401, map[string]string{"error": "Reopen Account Warmup from the Plugins menu."})
+		}
+		return l.createSession(capability)
 	}
 	if r.URL.Path != "/api/state" && r.URL.Path != "/api/warmup" {
 		return jsonResponse(404, map[string]string{"error": "Route not found."})

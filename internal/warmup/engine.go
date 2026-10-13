@@ -29,29 +29,26 @@ type Host interface {
 	Call(method string, request any, response any) error
 }
 
-// Config controls the explicit model choices and local duplicate guard.
-// CooldownSeconds is not a provider quota window or a verified reset time.
+// Config controls the explicit model choices.
 type Config struct {
-	ClaudeModel     string `json:"claude_model"`
-	CodexModel      string `json:"codex_model"`
-	CooldownSeconds int    `json:"cooldown_seconds"`
+	ClaudeModel string `json:"claude_model"`
+	CodexModel  string `json:"codex_model"`
 }
 
 func DefaultConfig() Config {
-	return Config{ClaudeModel: "claude-haiku-5-5", CodexModel: "gpt-6-luna", CooldownSeconds: 300}
+	return Config{ClaudeModel: "claude-haiku-5-5", CodexModel: "gpt-6-luna"}
 }
 
 // Account contains only the metadata needed for the UI. In particular, the
 // host's account, path and status_message fields are never returned to clients.
 type Account struct {
-	ID            string     `json:"id"`
-	Provider      string     `json:"provider"`
-	Label         string     `json:"label"`
-	Disabled      bool       `json:"disabled"`
-	Unavailable   bool       `json:"unavailable"`
-	Eligible      bool       `json:"eligible"`
-	Reason        string     `json:"reason,omitempty"`
-	CooldownUntil *time.Time `json:"cooldown_until,omitempty"`
+	ID          string `json:"id"`
+	Provider    string `json:"provider"`
+	Label       string `json:"label"`
+	Disabled    bool   `json:"disabled"`
+	Unavailable bool   `json:"unavailable"`
+	Eligible    bool   `json:"eligible"`
+	Reason      string `json:"reason,omitempty"`
 }
 
 type WarmRequest struct {
@@ -63,22 +60,21 @@ type WarmRequest struct {
 // Result records only locally observed request outcomes. Success does not
 // establish that a particular subscription quota window has started.
 type Result struct {
-	RequestID           string     `json:"request_id"`
-	AuthID              string     `json:"auth_id"`
-	Provider            string     `json:"provider"`
-	Model               string     `json:"model"`
-	Status              string     `json:"status"`
-	Message             string     `json:"message"`
-	StartedAt           time.Time  `json:"started_at"`
-	FinishedAt          time.Time  `json:"finished_at"`
-	CooldownUntil       *time.Time `json:"cooldown_until,omitempty"`
-	InputTokens         int64      `json:"input_tokens,omitempty"`
-	OutputTokens        int64      `json:"output_tokens,omitempty"`
-	CacheReadTokens     *int64     `json:"cache_read_tokens,omitempty"`
-	CacheCreationTokens *int64     `json:"cache_creation_tokens,omitempty"`
-	ReasoningTokens     *int64     `json:"reasoning_tokens,omitempty"`
-	ReasoningEffort     string     `json:"reasoning_effort,omitempty"`
-	Duplicate           bool       `json:"duplicate,omitempty"`
+	RequestID           string    `json:"request_id"`
+	AuthID              string    `json:"auth_id"`
+	Provider            string    `json:"provider"`
+	Model               string    `json:"model"`
+	Status              string    `json:"status"`
+	Message             string    `json:"message"`
+	StartedAt           time.Time `json:"started_at"`
+	FinishedAt          time.Time `json:"finished_at"`
+	InputTokens         int64     `json:"input_tokens,omitempty"`
+	OutputTokens        int64     `json:"output_tokens,omitempty"`
+	CacheReadTokens     *int64    `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens *int64    `json:"cache_creation_tokens,omitempty"`
+	ReasoningTokens     *int64    `json:"reasoning_tokens,omitempty"`
+	ReasoningEffort     string    `json:"reasoning_effort,omitempty"`
+	Duplicate           bool      `json:"duplicate,omitempty"`
 }
 
 type State struct {
@@ -115,27 +111,25 @@ type cacheEntry struct {
 // Engine keeps bounded, in-memory guards. Restarting/reloading the plugin
 // clears its history; the server remains authoritative about actual quotas.
 type Engine struct {
-	host      Host
-	mu        sync.Mutex
-	config    Config
-	active    map[string]bool
-	cooldowns map[string]time.Time
-	requests  map[string]*cacheEntry
-	recent    []Result
-	now       func() time.Time
+	host     Host
+	mu       sync.Mutex
+	config   Config
+	active   map[string]bool
+	requests map[string]*cacheEntry
+	recent   []Result
+	now      func() time.Time
 }
 
 // New constructs an engine with default settings. Configure validates and
 // applies any external configuration before the engine is exposed to clients.
 func New(host Host) *Engine {
 	return &Engine{
-		host:      host,
-		config:    DefaultConfig(),
-		active:    make(map[string]bool),
-		cooldowns: make(map[string]time.Time),
-		requests:  make(map[string]*cacheEntry),
-		recent:    make([]Result, 0),
-		now:       time.Now,
+		host:     host,
+		config:   DefaultConfig(),
+		active:   make(map[string]bool),
+		requests: make(map[string]*cacheEntry),
+		recent:   make([]Result, 0),
+		now:      time.Now,
 	}
 }
 
@@ -145,9 +139,6 @@ func normalizeConfig(config Config) (Config, error) {
 	}
 	if !modelPattern.MatchString(config.CodexModel) || !strings.HasPrefix(config.CodexModel, "gpt-") {
 		return Config{}, errors.New("Codex model must be a literal gpt- model ID without routing or reasoning suffixes")
-	}
-	if config.CooldownSeconds < 1 || config.CooldownSeconds > 86400 {
-		return Config{}, errors.New("cooldown_seconds must be between 1 and 86400")
 	}
 	return config, nil
 }
@@ -214,9 +205,6 @@ func (e *Engine) State(callbackID string) (State, error) {
 		if e.active[entry.ID] {
 			a.Eligible, a.Reason = false, "A warmup request is in progress"
 		}
-		if until := e.cooldowns[entry.ID]; until.After(now) {
-			a.Eligible, a.Reason, a.CooldownUntil = false, "Local duplicate guard is active", &until
-		}
 		state.Accounts = append(state.Accounts, a)
 	}
 	sort.Slice(state.Accounts, func(i, j int) bool {
@@ -282,17 +270,8 @@ func (e *Engine) Warm(request WarmRequest, callbackID string) (Result, error) {
 	if e.active[request.AuthID] {
 		return skip("A warmup request is already in progress for this account")
 	}
-	if until := e.cooldowns[request.AuthID]; until.After(now) {
-		result.CooldownUntil = &until
-		return skip("Local duplicate guard is active")
-	}
 	if len(e.active) >= maxConcurrent {
 		return skip("Too many warmup requests are in progress")
-	}
-	// Do not evict an unexpired guard to admit another account. Reserve a
-	// guard slot for each active call so simultaneous completions stay bounded.
-	if len(e.cooldowns)+len(e.active) >= maxRequestCache {
-		return skip("The account guard is full; wait for an existing guard to expire")
 	}
 	if !e.makeCacheRoomLocked() {
 		return skip("The request guard is full; wait for an active request to finish")
@@ -301,15 +280,10 @@ func (e *Engine) Warm(request WarmRequest, callbackID string) (Result, error) {
 	e.active[request.AuthID] = true
 	e.mu.Unlock()
 
-	sent := false
 	finish := func() Result {
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		result.FinishedAt = e.now().UTC()
-		if sent {
-			until := result.FinishedAt.Add(time.Duration(config.CooldownSeconds) * time.Second)
-			e.cooldowns[request.AuthID], result.CooldownUntil = until, &until
-		}
 		delete(e.active, request.AuthID)
 		e.requests[request.RequestID].running = false
 		e.requests[request.RequestID].result = result
@@ -355,7 +329,6 @@ func (e *Engine) Warm(request WarmRequest, callbackID string) (Result, error) {
 		return finish(), nil
 	}
 	var response modelResponse
-	sent = true
 	err = e.callHost("host.model.execute", modelReq, &response)
 	if err != nil {
 		result.Status, result.Message = hostFailure(err)
@@ -461,11 +434,6 @@ func safeLabel(label string) string {
 }
 
 func (e *Engine) pruneLocked(now time.Time) {
-	for id, until := range e.cooldowns {
-		if !until.After(now) {
-			delete(e.cooldowns, id)
-		}
-	}
 	for id, entry := range e.requests {
 		if !entry.running && now.Sub(entry.added) >= requestLifetime {
 			delete(e.requests, id)

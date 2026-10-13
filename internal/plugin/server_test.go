@@ -49,7 +49,7 @@ func TestRegisterDeclaresOnlyAuthenticatedActions(t *testing.T) {
 func TestPublicResourcesNeverCallHost(t *testing.T) {
 	host := &testHost{}
 	server := New(host)
-	for _, path := range []string{"/status", "/app.js", "/styles.css"} {
+	for _, path := range []string{"/status", "/bootstrap.js", "/app.js", "/styles.css", "/claude.svg", "/codex.svg"} {
 		response := server.management(managementRequest{Method: "GET", Path: ResourceBase + path})
 		if response.StatusCode != 200 || len(response.Body) == 0 {
 			t.Fatalf("Asset %s was not served", path)
@@ -126,7 +126,7 @@ func TestConfigurationRejectsMalformedAndUnknownFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.CooldownSeconds != 120 || config.CodexModel != "gpt-6-luna" {
+	if config.CodexModel != "gpt-6-luna" || config.CoreURL != defaultCoreURL || config.RecordUsage {
 		t.Fatalf("Configuration was not preserved: %+v", config)
 	}
 }

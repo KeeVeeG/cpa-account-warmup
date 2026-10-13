@@ -4,10 +4,26 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
+	"math/rand/v2"
 	"net/http"
 	"strings"
 )
+
+func randomWarmupPrompt() string {
+	const operators = "+-*/"
+	operator := operators[rand.IntN(len(operators))]
+	left, right := rand.IntN(9)+1, rand.IntN(9)+1
+	if operator == '/' {
+		// Keep both inputs single-digit and the answer an integer.
+		left = right * (rand.IntN(9/right) + 1)
+	}
+	if rand.IntN(2) == 0 {
+		return fmt.Sprintf("%d%c%d", left, operator, right)
+	}
+	return fmt.Sprintf("%d %c %d", left, operator, right)
+}
 
 // The host accepts a non-streaming request for both protocols. Its Codex
 // executor consumes the upstream SSE stream and returns the terminal response.
@@ -45,6 +61,7 @@ func buildModelRequest(provider, model, authID, callbackID string) (modelRequest
 	if strings.TrimSpace(model) == "" || strings.TrimSpace(authID) == "" {
 		return modelRequest{}, errors.New("A model and an exact account ID are required.")
 	}
+	prompt := randomWarmupPrompt()
 
 	var protocol string
 	var body any
@@ -61,7 +78,7 @@ func buildModelRequest(provider, model, authID, callbackID string) (modelRequest
 			"stream":     false,
 			"thinking":   map[string]string{"type": "disabled"},
 			"messages": []map[string]string{
-				{"role": "user", "content": "Reply OK"},
+				{"role": "user", "content": prompt},
 			},
 		}
 	case "codex":
@@ -71,16 +88,16 @@ func buildModelRequest(provider, model, authID, callbackID string) (modelRequest
 			"stream":       false,
 			"store":        false,
 			"instructions": "",
-			"input":        "Reply OK",
-			// The Codex backend rejects output token limits. Request no reasoning
-			// and retain the reported effort: older host catalogs may raise it.
-			"reasoning":   map[string]string{"effort": "none"},
+			"input":        prompt,
+			// Lite requests require all_turns even for a single input message.
+			"reasoning":   map[string]string{"effort": "low", "context": "all_turns"},
 			"text":        map[string]string{"verbosity": "low"},
 			"tools":       []any{},
 			"tool_choice": "none",
 		}
 		// Keep the host from adding its image-generation tool to this request.
 		headers.Set("X-OpenAI-Internal-Codex-Responses-Lite", "true")
+		headers.Set("X-CLIProxyAPI-Account-Warmup", "true")
 	default:
 		return modelRequest{}, errors.New("Only Claude and Codex accounts are supported.")
 	}

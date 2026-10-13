@@ -32,9 +32,6 @@ func newTestEngine(host Host, overrides Config) *Engine {
 	if overrides.CodexModel != "" {
 		config.CodexModel = overrides.CodexModel
 	}
-	if overrides.CooldownSeconds != 0 {
-		config.CooldownSeconds = overrides.CooldownSeconds
-	}
 	if err := engine.Configure(config); err != nil {
 		panic(err)
 	}
@@ -265,11 +262,11 @@ func TestDuplicateRequestsAndAccountRacesExecuteOnlyOnce(t *testing.T) {
 		t.Fatalf("replay = %#v, %v", replay, err)
 	}
 	request.RequestID = "request-new-2"
-	guarded, err := engine.Warm(request, "another-callback")
-	if err != nil || guarded.Status != "skipped" || guarded.CooldownUntil == nil {
-		t.Fatalf("guard = %#v, %v", guarded, err)
+	second, err := engine.Warm(request, "another-callback")
+	if err != nil || second.Status != "success" || second.Duplicate {
+		t.Fatalf("second request = %#v, %v", second, err)
 	}
-	if len(host.executions) != 1 {
+	if len(host.executions) != 2 {
 		t.Fatalf("executions = %d", len(host.executions))
 	}
 }
@@ -311,7 +308,7 @@ func TestHostErrorsAreSanitizedAndNeverRetried(t *testing.T) {
 			if result.Status != "error" && result.Status != "uncertain" {
 				t.Fatalf("status = %s", result.Status)
 			}
-			if len(host.executions) != 1 || result.CooldownUntil == nil {
+			if len(host.executions) != 1 {
 				t.Fatalf("unsafe failure handling: %#v", result)
 			}
 		})
@@ -326,7 +323,7 @@ func TestHostAccountListFailureSendsNoRequestAndRedactsError(t *testing.T) {
 		t.Fatalf("State error = %v", err)
 	}
 	result, err := engine.Warm(WarmRequest{"claude", "account-a", "request-0001"}, "callback")
-	if err != nil || result.Status != "error" || result.CooldownUntil != nil || len(host.executions) != 0 {
+	if err != nil || result.Status != "error" || len(host.executions) != 0 {
 		t.Fatalf("result = %#v, error = %v", result, err)
 	}
 }
@@ -347,7 +344,7 @@ func TestNonSuccessResponseStatusUsesSafeClassification(t *testing.T) {
 			if status == 0 || status >= 500 {
 				want = "uncertain"
 			}
-			if result.Status != want || result.CooldownUntil == nil {
+			if result.Status != want {
 				t.Fatalf("result = %#v, want %s", result, want)
 			}
 			if strings.Contains(result.Message, "secret-token") {
@@ -389,9 +386,6 @@ func TestHostPanicDoesNotStrandAccountOrLeakPayload(t *testing.T) {
 			if len(engine.active) != 0 || engine.requests[request.RequestID].running {
 				t.Fatal("panic stranded an in-progress request")
 			}
-			if (result.CooldownUntil != nil) != (method == "host.model.execute") {
-				t.Fatalf("incorrect attempt guard: %#v", result)
-			}
 			replay, err := engine.Warm(request, "")
 			if err != nil || !replay.Duplicate || replay.Status != want {
 				t.Fatalf("replay = %#v, %v", replay, err)
@@ -400,12 +394,12 @@ func TestHostPanicDoesNotStrandAccountOrLeakPayload(t *testing.T) {
 	}
 }
 
-func TestInvalidCompletionIsUncertainAndProtected(t *testing.T) {
+func TestInvalidCompletionIsUncertainAndNotRetried(t *testing.T) {
 	for _, body := range []string{`not JSON`, `{"error":{"message":"secret-token"}}`, `{"type":"message","model":"claude-opus-other","usage":{"input_tokens":1,"output_tokens":1}}`} {
 		host := &testHost{entries: []authEntry{oauth("account-a", "claude")}, response: modelResponse{StatusCode: 200, Body: []byte(body)}}
 		engine := newTestEngine(host, Config{})
 		result, err := engine.Warm(WarmRequest{"claude", "account-a", "request-0001"}, "")
-		if err != nil || result.Status != "uncertain" || result.CooldownUntil == nil {
+		if err != nil || result.Status != "uncertain" || len(host.executions) != 1 {
 			t.Fatalf("result = %#v, error = %v", result, err)
 		}
 		if strings.Contains(result.Message, "secret-token") {
@@ -414,30 +408,41 @@ func TestInvalidCompletionIsUncertainAndProtected(t *testing.T) {
 	}
 }
 
-func TestGuardUsesLocalClockAndDoesNotInventProviderReset(t *testing.T) {
-	host := &testHost{entries: []authEntry{oauth("account-a", "claude")}, response: successResponse("claude", DefaultConfig().ClaudeModel)}
-	engine := newTestEngine(host, Config{CooldownSeconds: 30})
-	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
-	engine.now = func() time.Time { return now }
-	result, err := engine.Warm(WarmRequest{"claude", "account-a", "request-0001"}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.CooldownUntil.Equal(now.Add(30 * time.Second)) {
-		t.Fatalf("cooldown = %v", result.CooldownUntil)
-	}
-	state, err := engine.State("")
-	if err != nil || state.Accounts[0].Eligible {
-		t.Fatalf("guarded state = %#v, %v", state, err)
-	}
-	now = now.Add(31 * time.Second)
-	state, err = engine.State("")
-	if err != nil || !state.Accounts[0].Eligible || state.Accounts[0].CooldownUntil != nil {
-		t.Fatalf("expired state = %#v, %v", state, err)
-	}
-	result, err = engine.Warm(WarmRequest{"claude", "account-a", "request-0002"}, "")
-	if err != nil || result.Status != "success" || len(host.executions) != 2 {
-		t.Fatalf("second = %#v, %v", result, err)
+func TestCompletedAccountCanWarmAgainImmediately(t *testing.T) {
+	for _, test := range []struct {
+		status     string
+		executeErr error
+	}{
+		{"success", nil},
+		{"error", secretError{429}},
+		{"uncertain", secretError{503}},
+	} {
+		t.Run(test.status, func(t *testing.T) {
+			host := &testHost{
+				entries:    []authEntry{oauth("account-a", "claude")},
+				response:   successResponse("claude", DefaultConfig().ClaudeModel),
+				executeErr: test.executeErr,
+			}
+			engine := newTestEngine(host, Config{})
+			now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+			engine.now = func() time.Time { return now }
+			for _, requestID := range []string{"request-0001", "request-0002"} {
+				result, err := engine.Warm(WarmRequest{"claude", "account-a", requestID}, "")
+				if err != nil || result.Status != test.status || result.Duplicate {
+					t.Fatalf("warmup = %#v, %v", result, err)
+				}
+				if !result.FinishedAt.Equal(now) {
+					t.Fatalf("finished at = %s, want unchanged clock %s", result.FinishedAt, now)
+				}
+				state, err := engine.State("")
+				if err != nil || len(state.Accounts) != 1 || !state.Accounts[0].Eligible {
+					t.Fatalf("completed account should remain eligible: %#v, %v", state, err)
+				}
+			}
+			if len(host.executions) != 2 {
+				t.Fatalf("executions = %d, want 2 without advancing the clock", len(host.executions))
+			}
+		})
 	}
 }
 
@@ -505,9 +510,6 @@ func TestConfigureIsAtomicAndRejectsRoutingExpressions(t *testing.T) {
 		func(c *Config) { c.ClaudeModel = "claude-test(high)" },
 		func(c *Config) { c.ClaudeModel = "provider/claude-test" },
 		func(c *Config) { c.CodexModel = "gpt-test\n" },
-		func(c *Config) { c.CooldownSeconds = -1 },
-		func(c *Config) { c.CooldownSeconds = 0 },
-		func(c *Config) { c.CooldownSeconds = 86401 },
 	}
 	for _, mutate := range mutations {
 		config := DefaultConfig()

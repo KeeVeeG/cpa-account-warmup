@@ -17,11 +17,9 @@ import (
 
 const maxRPCBytes = 16 << 20
 
-// RPC lifecycle and host callbacks use separate locks: local HTTP handlers can
-// call the host without an outer plugin RPC holding the lifecycle lock.
-var lifecycle sync.RWMutex
+var lifecycle sync.Mutex
 var bridge sync.RWMutex
-var server *plugin.Server
+var calls = newRPCGate()
 
 func main() {}
 
@@ -32,13 +30,11 @@ func cliproxy_plugin_init(host *C.cliproxy_host_api, api *C.cliproxy_plugin_api)
 	}
 	lifecycle.Lock()
 	defer lifecycle.Unlock()
-	if server != nil {
-		server.Close()
-	}
+	calls.close()
 	bridge.Lock()
 	C.warmup_set_host(host)
 	bridge.Unlock()
-	server = plugin.New(nativeHost{})
+	calls.open(plugin.New(nativeHost{}))
 	api.abi_version = 1
 	api.call = C.cliproxy_plugin_call_fn(C.cliproxyPluginCall)
 	api.free_buffer = C.cliproxy_plugin_free_fn(C.cliproxyPluginFree)
@@ -62,17 +58,18 @@ func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t,
 		writeResponse(response, plugin.ErrorEnvelope("invalid_request", "Invalid plugin RPC request."))
 		return 1
 	}
-	lifecycle.RLock()
-	defer lifecycle.RUnlock()
-	if server == nil {
+	methodName := C.GoString(method)
+	handler := calls.acquire(methodName)
+	if handler == nil {
 		writeResponse(response, plugin.ErrorEnvelope("not_initialized", "The plugin is not initialized."))
 		return 1
 	}
+	defer calls.release()
 	var raw []byte
 	if requestLen > 0 {
 		raw = C.GoBytes(unsafe.Pointer(request), C.int(requestLen))
 	}
-	if !writeResponse(response, server.Handle(C.GoString(method), raw)) {
+	if !writeResponse(response, handler.Handle(methodName, raw)) {
 		return 1
 	}
 	return 0
@@ -89,10 +86,7 @@ func cliproxyPluginFree(ptr unsafe.Pointer, length C.size_t) {
 func cliproxyPluginShutdown() {
 	lifecycle.Lock()
 	defer lifecycle.Unlock()
-	if server != nil {
-		server.Close()
-	}
-	server = nil
+	calls.close()
 	bridge.Lock()
 	defer bridge.Unlock()
 	C.warmup_set_host(nil)

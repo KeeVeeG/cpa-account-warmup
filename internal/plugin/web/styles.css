@@ -1,17 +1,25 @@
 :root {
-  color-scheme: dark;
-  --page: #0b0d11;
-  --surface: #141720;
-  --inset: #10131a;
-  --hover: #1c212c;
-  --border: #222836;
-  --border-strong: #2e3646;
-  --text: #f8fafc;
-  --secondary: #d3dce8;
-  --muted: #b0bdcf;
-  --quiet: #9aa9bf;
-  --accent: #5dd3c7;
-  --accent-hover: #83e0d6;
+  color-scheme: light dark;
+  --page: #ffffff;
+  --surface: #ffffff;
+  --inset: #ffffff;
+  --hover: #ffffff;
+  --border: #dce3eb;
+  --border-strong: #cbd5e1;
+  --text: #0f172a;
+  --secondary: #253449;
+  --muted: #475569;
+  --quiet: #526174;
+  --accent: #0f766e;
+  --accent-hover: #0b5d57;
+  --accent-contrast: #ffffff;
+  --accent-soft: #f0fdfa;
+  --count-background: #eff3f0;
+  --success-background: #eef7f0;
+  --success-text: #2f6b3f;
+  --error-background: #fff1ee;
+  --error-text: #9f2d20;
+  --error-border: #dfb7b0;
   font-family:
     Inter,
     "Segoe UI Variable Text",
@@ -23,6 +31,33 @@
   font-size: 14px;
   font-synthesis: none;
   line-height: 1.6;
+}
+
+/* In an iframe, this follows the host's color-scheme, including cross-origin.
+   The palette matches EasyCLIProxyAPI's workspace and semantic status colors. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #0b0d11;
+    --surface: #141720;
+    --inset: #10131a;
+    --hover: #252b38;
+    --border: #222836;
+    --border-strong: #2e3646;
+    --text: #f8fafc;
+    --secondary: #d3dce8;
+    --muted: #b0bdcf;
+    --quiet: #9aa9bf;
+    --accent: #5dd3c7;
+    --accent-hover: #83e0d6;
+    --accent-contrast: #0b0d11;
+    --accent-soft: rgb(45 169 158 / 20%);
+    --count-background: rgb(248 250 252 / 12%);
+    --success-background: rgb(16 185 129 / 16%);
+    --success-text: #6ee7b7;
+    --error-background: rgb(198 87 70 / 18%);
+    --error-text: #fca5a5;
+    --error-border: rgb(198 87 70 / 35%);
+  }
 }
 
 * {
@@ -52,7 +87,8 @@ input:focus-visible {
 [hidden] {
   display: none !important;
 }
-svg {
+svg,
+.provider-icon {
   display: block;
   flex: none;
   width: 16px;
@@ -101,7 +137,7 @@ svg {
   width: 34px;
   height: 34px;
   border-radius: 9px;
-  background: rgb(45 169 158 / 20%);
+  background: var(--accent-soft);
   color: var(--accent);
 }
 .toolbar-icon svg {
@@ -118,7 +154,7 @@ svg {
   border: 1px solid var(--accent);
   border-radius: 8px;
   background: var(--accent);
-  color: var(--page);
+  color: var(--accent-contrast);
   font-weight: 500;
   white-space: nowrap;
 }
@@ -150,10 +186,10 @@ svg {
 .notice {
   margin: 0;
   padding: 10px 12px;
-  border: 1px solid rgb(198 87 70 / 35%);
+  border: 1px solid var(--error-border);
   border-radius: 8px;
-  color: #fca5a5;
-  background: rgb(198 87 70 / 12%);
+  color: var(--error-text);
+  background: var(--error-background);
   overflow-wrap: anywhere;
 }
 
@@ -187,7 +223,7 @@ svg {
   background: var(--accent);
 }
 .provider-tabs button[aria-selected="true"] {
-  border-color: rgb(93 211 199 / 28%);
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
   background: color-mix(in srgb, var(--accent) 10%, var(--surface));
   color: var(--accent-hover);
   font-weight: 600;
@@ -196,7 +232,7 @@ svg {
   min-width: 20px;
   padding: 2px 6px;
   border-radius: 999px;
-  background: rgb(248 250 252 / 12%);
+  background: var(--count-background);
   color: var(--muted);
   font-size: 11px;
   font-weight: 600;
@@ -205,16 +241,9 @@ svg {
   font-variant-numeric: tabular-nums;
 }
 [aria-selected="true"] .account-count {
-  background: rgb(93 211 199 / 16%);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
   color: var(--accent-hover);
 }
-.claude-icon {
-  color: #d97757;
-}
-.codex-icon {
-  color: #a69bff;
-}
-
 .provider-panel {
   display: grid;
   gap: 18px;
@@ -283,7 +312,7 @@ svg {
 .account-icon {
   flex: none;
 }
-.account-icon svg {
+.account-icon .provider-icon {
   width: 26px;
   height: 26px;
 }
@@ -330,23 +359,18 @@ svg {
   line-height: 1.4;
 }
 .account-status[data-status="success"] {
-  color: #6ee7b7;
-  background: rgb(16 185 129 / 16%);
+  color: var(--success-text);
+  background: var(--success-background);
 }
 .account-status[data-status="error"],
 .account-status[data-status="uncertain"] {
-  color: #fca5a5;
-  background: rgb(198 87 70 / 18%);
+  color: var(--error-text);
+  background: var(--error-background);
 }
 .account-status[data-status="running"],
 .account-status[data-status="queued"] {
   color: var(--accent-hover);
-  background: rgb(93 211 199 / 12%);
-}
-.account-time {
-  color: var(--quiet);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 .account-detail {
   padding: 8px;
@@ -383,6 +407,7 @@ svg {
   font-variant-numeric: tabular-nums;
 }
 progress {
+  appearance: none;
   display: block;
   width: 100%;
   height: 6px;
@@ -397,10 +422,20 @@ progress::-webkit-progress-bar {
 progress::-webkit-progress-value {
   background: var(--accent);
   border-radius: 999px;
+  transition: width 400ms ease-in-out;
 }
 progress::-moz-progress-bar {
   background: var(--accent);
   border-radius: 999px;
+  transition: width 400ms ease-in-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  progress::-webkit-progress-value {
+    transition: none;
+  }
+  progress::-moz-progress-bar {
+    transition: none;
+  }
 }
 .page-footer {
   display: flex;

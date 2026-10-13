@@ -3,7 +3,9 @@
 param(
     [Parameter(Mandatory)]
     [string]$CorePath,
+    [string]$LibraryPath,
     [string]$Compiler,
+    [switch]$RecordUsage,
     [string]$WorkDirectory = (Join-Path $PSScriptRoot '..\work\smoke')
 )
 
@@ -18,13 +20,22 @@ $pluginDirectory = Join-Path $runDirectory 'plugins'
 $temporaryDirectory = Join-Path $runDirectory 'tmp'
 $null = New-Item -ItemType Directory -Path $authDirectory, $pluginDirectory, $temporaryDirectory -Force
 
-$buildArguments = @{ OutputDirectory = (Join-Path $runDirectory 'build') }
-if ($Compiler) { $buildArguments.Compiler = $Compiler }
-& (Join-Path $PSScriptRoot 'build.ps1') @buildArguments
-$libraryFiles = @(Get-ChildItem -LiteralPath $buildArguments.OutputDirectory -Recurse -File |
-    Where-Object { $_.Name -match '^cliproxy-account-warmup\.(dll|so|dylib)$' })
-if ($libraryFiles.Count -ne 1) { throw 'The build did not produce exactly one plugin library.' }
-Copy-Item -LiteralPath $libraryFiles[0].FullName -Destination $pluginDirectory
+if ($LibraryPath) {
+    $library = Get-Item -LiteralPath $LibraryPath -ErrorAction Stop
+    if ($library.PSIsContainer -or $library.Name -notmatch '^cliproxy-account-warmup\.(dll|so|dylib)$') {
+        throw 'LibraryPath must point to a built Account Warmup plugin library.'
+    }
+}
+else {
+    $buildArguments = @{ OutputDirectory = (Join-Path $runDirectory 'build') }
+    if ($Compiler) { $buildArguments.Compiler = $Compiler }
+    & (Join-Path $PSScriptRoot 'build.ps1') @buildArguments
+    $libraryFiles = @(Get-ChildItem -LiteralPath $buildArguments.OutputDirectory -Recurse -File |
+        Where-Object { $_.Name -match '^cliproxy-account-warmup\.(dll|so|dylib)$' })
+    if ($libraryFiles.Count -ne 1) { throw 'The build did not produce exactly one plugin library.' }
+    $library = $libraryFiles[0]
+}
+Copy-Item -LiteralPath $library.FullName -Destination $pluginDirectory
 
 $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
 $listener.Start()
@@ -32,6 +43,8 @@ try { $port = $listener.LocalEndpoint.Port }
 finally { $listener.Stop() }
 $baseURL = "http://127.0.0.1:$port"
 $managementKey = [Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N')
+$inferenceKey = [Guid]::NewGuid().ToString('N')
+$apiKeys = if ($RecordUsage) { "'$inferenceKey'" } else { '' }
 $configPath = Join-Path $runDirectory 'config.yaml'
 $config = @"
 config-version: 8
@@ -46,7 +59,7 @@ management:
   disable-control-panel: true
   disable-auto-update-panel: true
 access:
-  api-keys: []
+  api-keys: [$apiKeys]
 requests:
   proxy-url: '$baseURL'
 oauth:
@@ -57,6 +70,8 @@ plugins:
   configs:
     cliproxy-account-warmup:
       enabled: true
+      record_usage: $($RecordUsage.IsPresent.ToString().ToLowerInvariant())
+      core_url: '$baseURL'
 "@
 [IO.File]::WriteAllText($configPath, $config, [Text.UTF8Encoding]::new($false))
 
@@ -76,11 +91,17 @@ foreach ($variableName in @('SystemRoot', 'WINDIR', 'PATH')) {
     $value = [Environment]::GetEnvironmentVariable($variableName, 'Process')
     if ($null -ne $value) { $startInfo.Environment[$variableName] = $value }
 }
+if ($IsWindows) {
+    # A plugin must not depend on DLLs available only in the build toolchain.
+    $windowsDirectory = [Environment]::GetEnvironmentVariable('SystemRoot', 'Process')
+    $startInfo.Environment['PATH'] = (Join-Path $windowsDirectory 'System32') + [IO.Path]::PathSeparator + $windowsDirectory
+}
 foreach ($variableName in @('USERPROFILE', 'HOME', 'APPDATA', 'LOCALAPPDATA')) {
     $startInfo.Environment[$variableName] = $runDirectory
 }
 $startInfo.Environment['TEMP'] = $temporaryDirectory
 $startInfo.Environment['TMP'] = $temporaryDirectory
+$startInfo.Environment['TMPDIR'] = $temporaryDirectory
 # The core also checks unrelated client versions in the background. Route those
 # requests back into this isolated listener, which does not implement a proxy.
 foreach ($variableName in @('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY')) {
@@ -107,7 +128,8 @@ function Invoke-SmokeRequest {
         [string]$Body,
         [string]$RequestBase = $baseURL,
         [string]$Token,
-        [string]$Origin
+        [string]$Origin,
+        [hashtable]$ExtraHeaders = @{}
     )
     $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::new($Method), "$RequestBase$Path")
     try {
@@ -118,6 +140,9 @@ function Invoke-SmokeRequest {
             $request.Headers.Authorization = [Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $Token)
         }
         if ($Origin) { $null = $request.Headers.TryAddWithoutValidation('Origin', $Origin) }
+        foreach ($name in $ExtraHeaders.Keys) {
+            $null = $request.Headers.TryAddWithoutValidation($name, [string]$ExtraHeaders[$name])
+        }
         if ($PSBoundParameters.ContainsKey('Body')) {
             $request.Content = [Net.Http.StringContent]::new($Body, [Text.Encoding]::UTF8, 'application/json')
         }
@@ -171,30 +196,61 @@ try {
     }
     $checks.Add('Native ABI registration and metadata')
 
+    if ($RecordUsage) {
+        Assert-Status (Invoke-SmokeRequest -Path '/v1/models') 401 'Native API authentication is preserved'
+        Assert-Status (Invoke-SmokeRequest -Path '/v1/models' -Token $inferenceKey) 200 'Ordinary API keys still work'
+        $forgedTicket = 'cpa-warmup.' + ('a' * 64)
+        $ticketHeaders = @{ 'X-CLIProxyAPI-Warmup-Ticket' = $forgedTicket }
+        $reservedRequest = '{"model":"cliproxy-account-warmup-internal","input":"Reply OK","stream":false}'
+        Assert-Status (Invoke-SmokeRequest -Path '/v1/responses' -Method POST -Token $forgedTicket -ExtraHeaders $ticketHeaders -Body $reservedRequest) 401 'Forged warmup authentication is rejected'
+        Assert-Status (Invoke-SmokeRequest -Path '/v1/responses' -Method POST -Token $inferenceKey -ExtraHeaders $ticketHeaders -Body $reservedRequest) 403 'A regular API key cannot forge a warmup ticket'
+    }
+    else {
+        Assert-Status (Invoke-SmokeRequest -Path '/v1/models') 200 'Anonymous API access is preserved without Usage recording'
+    }
+
     $resourceBase = '/v0/resource/plugins/cliproxy-account-warmup'
     $launchPath = [string]$registered[0].menus[0].path
-    if ($launchPath -cnotmatch ('^' + [regex]::Escape($resourceBase) + '/launch/[a-f0-9]{64}$')) {
+    if ($launchPath -cnotmatch ('^' + [regex]::Escape($resourceBase) + '/launch/([0-9]+)/([a-f0-9]{64})$')) {
         throw 'The plugin menu did not expose a valid launch capability.'
     }
-    $checks.Add('Authenticated menu contains an unguessable launch capability')
-    $launchResponse = Invoke-SmokeRequest -Path $launchPath
-    Assert-Status $launchResponse 302 'Menu launch redirects to the local interface'
-    if ($launchResponse.Location -cnotmatch '^http://127\.0\.0\.1:([0-9]+)/#session=([a-f0-9]{64})$') {
-        throw 'The launch did not return a loopback session fragment.'
-    }
     $localPort = [int]$Matches[1]
-    $sessionToken = $Matches[2]
-    if ($localPort -lt 1 -or $localPort -gt 65535 -or $localPort -eq $port -or
-        $launchResponse.CacheControl -ne 'no-store' -or $launchResponse.Body.Contains($sessionToken)) {
-        throw 'The launch response exposed an invalid or cacheable session.'
+    $launchCapability = $Matches[2]
+    if ($localPort -lt 1 -or $localPort -gt 65535 -or $localPort -eq $port) {
+        throw 'The menu contains an invalid local interface port.'
     }
     $localBase = "http://127.0.0.1:$localPort"
-    $checks.Add('Session is carried only in the non-cacheable redirect fragment')
+    $checks.Add('Authenticated menu contains an unguessable launch capability')
+    $launchResponse = Invoke-SmokeRequest -Path $launchPath
+    Assert-Status $launchResponse 200 'Menu launch serves the static bootstrap page'
+    $bootstrapSource = [IO.File]::ReadAllText((Join-Path $repositoryRoot 'internal/plugin/web/bootstrap.html'))
+    if ($launchResponse.Body -cne $bootstrapSource -or -not $launchResponse.ContentType.StartsWith('text/html') -or
+        $launchResponse.Location -or $launchResponse.Body.Contains($launchCapability)) {
+        throw 'The launch page contains dynamic content, credentials, or a redirect.'
+    }
+    $checks.Add('The public launch page is static and contains no credentials')
+    $sessionArguments = @{ RequestBase = $localBase; Origin = $localBase; ExtraHeaders = @{ 'Sec-Fetch-Site' = 'same-origin' } }
+    Assert-Status (Invoke-SmokeRequest @sessionArguments -Path '/api/session' -Method POST -Body '') 401 'Local session requires a launch capability'
+    Assert-Status (Invoke-SmokeRequest @sessionArguments -Path '/api/session' -Method POST -Token $managementKey -Body '') 401 'Local session rejects a management key'
+    Assert-Status (Invoke-SmokeRequest -RequestBase $localBase -Origin 'https://invalid.example' -Path '/api/session' -Method POST -Token $launchCapability -Body '') 403 'Local session rejects a foreign origin'
+    Assert-Status (Invoke-SmokeRequest -RequestBase $localBase -Origin $localBase -Path '/api/session' -Method POST -Token $launchCapability -Body '') 403 'Local session requires a same-origin fetch'
+    Assert-Status (Invoke-SmokeRequest @sessionArguments -Path '/api/session' -Method POST -Token $launchCapability -Body '{}') 400 'Local session rejects a nonempty request body'
+    $sessionResponse = Invoke-SmokeRequest @sessionArguments -Path '/api/session' -Method POST -Token $launchCapability -Body ''
+    Assert-Status $sessionResponse 200 'Local launch capability creates a session'
+    $sessionToken = [string](($sessionResponse.Body | ConvertFrom-Json).session_token)
+    if ($sessionToken -cnotmatch '^[a-f0-9]{64}$' -or $sessionToken -ceq $launchCapability -or
+        $sessionResponse.CacheControl -ne 'no-store') {
+        throw 'The local session response is invalid or cacheable.'
+    }
+    $checks.Add('Local session token is distinct from the launch capability and is not cached')
 
     foreach ($asset in @(
         @{ Route = 'status'; File = 'index.html'; Type = 'text/html' },
+        @{ Route = 'bootstrap.js'; File = 'bootstrap.js'; Type = 'text/javascript' },
         @{ Route = 'app.js'; File = 'app.js'; Type = 'text/javascript' },
-        @{ Route = 'styles.css'; File = 'styles.css'; Type = 'text/css' }
+        @{ Route = 'styles.css'; File = 'styles.css'; Type = 'text/css' },
+        @{ Route = 'claude.svg'; File = 'claude.svg'; Type = 'image/svg+xml' },
+        @{ Route = 'codex.svg'; File = 'codex.svg'; Type = 'image/svg+xml' }
     )) {
         $response = Invoke-SmokeRequest -Path "$resourceBase/$($asset.Route)"
         Assert-Status $response 200 "Public $($asset.File) resource"
@@ -218,7 +274,7 @@ try {
         throw 'The local page contains credentials, a management key form, or altered content.'
     }
     $checks.Add('Local HTML contains no management key form or embedded credentials')
-    foreach ($asset in @('app.js', 'styles.css')) {
+    foreach ($asset in @('app.js', 'styles.css', 'claude.svg', 'codex.svg')) {
         $localAsset = Invoke-SmokeRequest -RequestBase $localBase -Path "/$asset"
         Assert-Status $localAsset 200 "Local $asset resource"
         $source = [IO.File]::ReadAllText((Join-Path $repositoryRoot "internal/plugin/web/$asset"))

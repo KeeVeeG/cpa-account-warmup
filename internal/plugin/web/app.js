@@ -2,6 +2,16 @@
 "use strict";
 
 (() => {
+  let bootstrapCapability = new URLSearchParams(window.location.hash.slice(1)).get(
+    "bootstrap",
+  );
+  if (window.location.hash) {
+    window.history.replaceState(
+      null,
+      "",
+      window.location.pathname + window.location.search,
+    );
+  }
   const API_BASE = "/api";
   const OPEN_FROM_PLUGINS =
     "Open Account Warmup from Plugins in EasyCLIProxyAPI.";
@@ -240,12 +250,13 @@
         status: "unavailable",
         message: account.reason || "This account is currently unavailable.",
       };
-    if (!isEligible(account))
+    if (!isEligible(account)) {
       return {
         ...result,
         status: "skipped",
         message: account.reason || "This account is not eligible for warmup.",
       };
+    }
     return result || { status: "ready", message: "No request sent" };
   }
 
@@ -346,21 +357,14 @@
           }
           details.push(tokens.join(" · "));
         }
-        $(".account-detail", row).textContent = details.join(". ");
+        const detail = $(".account-detail", row);
+        for (const [index, text] of details.entries()) {
+          if (index > 0) detail.append(document.createElement("br"));
+          detail.append(document.createTextNode(text));
+        }
         const badge = $(".account-status", row);
         badge.dataset.status = result.status;
         badge.textContent = STATUS_LABELS[result.status] || "Unknown";
-        const finished = new Date(result.finished_at);
-        if (Number.isFinite(finished.getTime())) {
-          const time = $(".account-time", row);
-          time.dateTime = finished.toISOString();
-          time.title = finished.toLocaleString();
-          time.textContent = finished.toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-          });
-          time.hidden = false;
-        }
         list.append(fragment);
       }
     }
@@ -439,7 +443,7 @@
         const key = accountKey(provider, account.id);
         state.results.set(key, {
           status: "running",
-          message: `Sending one minimal request to ${state.config[`${provider}_model`]}`,
+          message: `Sending a short request to ${state.config[`${provider}_model`]}`,
         });
         renderCard(provider);
         let result;
@@ -548,21 +552,43 @@
       event.returnValue = "";
     }
   });
-  const sessionToken = new URLSearchParams(window.location.hash.slice(1)).get(
-    "session",
-  );
-  if (window.location.hash) {
-    window.history.replaceState(
-      null,
-      "",
-      window.location.pathname + window.location.search,
-    );
+  async function connect() {
+    if (!bootstrapCapability || !/^[a-f0-9]{64}$/.test(bootstrapCapability)) {
+      bootstrapCapability = "";
+      showNotice(OPEN_FROM_PLUGINS);
+      render();
+      return;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15_000);
+    try {
+      const request = fetch(API_BASE + "/session", {
+        method: "POST",
+        credentials: "omit",
+        cache: "no-store",
+        redirect: "error",
+        signal: controller.signal,
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${bootstrapCapability}`,
+        },
+      });
+      bootstrapCapability = "";
+      const response = await request;
+      if (!response.ok) throw new Error("Session exchange failed");
+      const data = await response.json();
+      if (typeof data?.session_token !== "string" || !/^[a-f0-9]{64}$/.test(data.session_token)) {
+        throw new Error("Invalid session");
+      }
+      state.sessionToken = data.session_token;
+      await loadState();
+    } catch {
+      bootstrapCapability = "";
+      showNotice(OPEN_FROM_PLUGINS);
+      render();
+    } finally {
+      clearTimeout(timer);
+    }
   }
-  if (sessionToken && /^[a-f0-9]{64}$/.test(sessionToken)) {
-    state.sessionToken = sessionToken;
-    void loadState();
-  } else {
-    showNotice(OPEN_FROM_PLUGINS);
-    render();
-  }
+  void connect();
 })();

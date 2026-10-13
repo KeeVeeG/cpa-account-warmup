@@ -2,26 +2,54 @@ name: CI
 
 on:
   push:
+    branches: ['**']
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      release_tag:
+        type: string
+        default: ''
+      repository_url:
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   test-and-build:
-    name: Test and build (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Test and build (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - runner: ubuntu-24.04
+            goos: linux
+            goarch: amd64
+          - runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+          - runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+          - runner: macos-15
+            goos: darwin
+            goarch: arm64
+          - runner: windows-2025
+            goos: windows
+            goarch: amd64
     env:
       CGO_ENABLED: '1'
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      PLUGIN_RELEASE_TAG: ${{ inputs.release_tag }}
+      PLUGIN_REPOSITORY_URL: ${{ inputs.repository_url }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,12 +97,33 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: bash ./scripts/build.sh
+      - name: Load packaged plugin in CLIProxyAPI 8.0.27
+        shell: pwsh
+        run: |
+          $core = ./scripts/download-core.ps1 -OperatingSystem $env:GOOS -Architecture $env:GOARCH -Destination (Join-Path $env:RUNNER_TEMP 'core')
+          $archives = @(Get-ChildItem -LiteralPath dist -Filter "*_$($env:GOOS)_$($env:GOARCH).zip" -File)
+          if ($archives.Count -ne 1) { throw 'Expected exactly one plugin archive for this platform.' }
+          $packageDirectory = Join-Path $env:RUNNER_TEMP 'plugin-package'
+          Expand-Archive -LiteralPath $archives[0].FullName -DestinationPath $packageDirectory
+          $libraries = @(Get-ChildItem -LiteralPath $packageDirectory -File | Where-Object { $_.Name -match '^cliproxy-account-warmup\.(dll|so|dylib)$' })
+          if ($libraries.Count -ne 1) { throw 'Expected exactly one plugin library at the archive root.' }
+          ./scripts/smoke.ps1 -CorePath $core -LibraryPath $libraries[0].FullName
+          ./scripts/smoke.ps1 -CorePath $core -LibraryPath $libraries[0].FullName -RecordUsage
+      - name: Retain native smoke logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-smoke-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            work/smoke/**/stdout.log
+            work/smoke/**/stderr.log
+            work/smoke/**/smoke-results.json
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Retain build artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: cliproxy-account-warmup-${{ runner.os }}-${{ runner.arch }}
-          path: |
-            dist/*.zip
-            dist/checksums.txt
+          name: cliproxy-account-warmup-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*.zip
           if-no-files-found: error
           retention-days: 14
