@@ -17,9 +17,10 @@ import (
 
 const maxRPCBytes = 16 << 20
 
-// Calls hold a read lock through every host callback. Shutdown waits for active
-// requests before clearing the host table; no background callbacks outlive RPCs.
+// RPC lifecycle and host callbacks use separate locks: local HTTP handlers can
+// call the host without an outer plugin RPC holding the lifecycle lock.
 var lifecycle sync.RWMutex
+var bridge sync.RWMutex
 var server *plugin.Server
 
 func main() {}
@@ -31,7 +32,12 @@ func cliproxy_plugin_init(host *C.cliproxy_host_api, api *C.cliproxy_plugin_api)
 	}
 	lifecycle.Lock()
 	defer lifecycle.Unlock()
+	if server != nil {
+		server.Close()
+	}
+	bridge.Lock()
 	C.warmup_set_host(host)
+	bridge.Unlock()
 	server = plugin.New(nativeHost{})
 	api.abi_version = 1
 	api.call = C.cliproxy_plugin_call_fn(C.cliproxyPluginCall)
@@ -83,7 +89,12 @@ func cliproxyPluginFree(ptr unsafe.Pointer, length C.size_t) {
 func cliproxyPluginShutdown() {
 	lifecycle.Lock()
 	defer lifecycle.Unlock()
+	if server != nil {
+		server.Close()
+	}
 	server = nil
+	bridge.Lock()
+	defer bridge.Unlock()
 	C.warmup_set_host(nil)
 }
 
@@ -102,6 +113,8 @@ func writeResponse(response *C.cliproxy_buffer, raw []byte) bool {
 type nativeHost struct{}
 
 func (nativeHost) Call(method string, request any, target any) error {
+	bridge.RLock()
+	defer bridge.RUnlock()
 	raw, err := json.Marshal(request)
 	if err != nil {
 		return errors.New("Could not encode host request.")

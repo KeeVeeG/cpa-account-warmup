@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strings"
 )
@@ -29,9 +30,13 @@ type modelResponse struct {
 }
 
 type modelResponseInfo struct {
-	InputTokens  int64
-	OutputTokens int64
-	Model        string
+	InputTokens         int64
+	OutputTokens        int64
+	CacheReadTokens     *int64
+	CacheCreationTokens *int64
+	ReasoningTokens     *int64
+	ReasoningEffort     string
+	Model               string
 }
 
 // buildModelRequest asks the host to use one exact credential and model. It
@@ -43,19 +48,20 @@ func buildModelRequest(provider, model, authID, callbackID string) (modelRequest
 
 	var protocol string
 	var body any
+	headers := http.Header{
+		"Content-Type": {"application/json"},
+		"Accept":       {"application/json"},
+	}
 	switch provider {
 	case "claude":
 		protocol = "claude"
 		body = map[string]any{
 			"model":      model,
-			"max_tokens": 32,
+			"max_tokens": 1,
 			"stream":     false,
-			// Low is Haiku 5.5's lowest effort. Adaptive thinking preserves it
-			// through the host; thinking and visible text share the 32-token cap.
-			"thinking":      map[string]string{"type": "adaptive"},
-			"output_config": map[string]string{"effort": "low"},
+			"thinking":   map[string]string{"type": "disabled"},
 			"messages": []map[string]string{
-				{"role": "user", "content": "Reply with OK."},
+				{"role": "user", "content": "Reply OK"},
 			},
 		}
 	case "codex":
@@ -64,15 +70,17 @@ func buildModelRequest(provider, model, authID, callbackID string) (modelRequest
 			"model":        model,
 			"stream":       false,
 			"store":        false,
-			"instructions": "Reply with OK only.",
-			"input":        "Reply with OK.",
-			// gpt-6-luna's lowest supported effort in the pinned host catalog
-			// is low. Neither "none" nor an output token cap is supported by
-			// the Codex backend. Keep this limitation visible in the UI/docs.
-			"reasoning":   map[string]string{"effort": "low"},
+			"instructions": "",
+			"input":        "Reply OK",
+			// The Codex backend rejects output token limits. Request no reasoning
+			// and retain the reported effort: older host catalogs may raise it.
+			"reasoning":   map[string]string{"effort": "none"},
+			"text":        map[string]string{"verbosity": "low"},
 			"tools":       []any{},
 			"tool_choice": "none",
 		}
+		// Keep the host from adding its image-generation tool to this request.
+		headers.Set("X-OpenAI-Internal-Codex-Responses-Lite", "true")
 	default:
 		return modelRequest{}, errors.New("Only Claude and Codex accounts are supported.")
 	}
@@ -86,16 +94,23 @@ func buildModelRequest(provider, model, authID, callbackID string) (modelRequest
 		HostCallbackID: callbackID,
 		// An explicit nonempty header map prevents host fallback from
 		// inheriting the browser's management authorization headers.
-		Headers: map[string][]string{
-			"Content-Type": {"application/json"},
-			"Accept":       {"application/json"},
-		},
+		Headers: headers,
 	}, nil
 }
 
 type responseUsage struct {
-	InputTokens  *int64 `json:"input_tokens"`
-	OutputTokens *int64 `json:"output_tokens"`
+	InputTokens              *int64 `json:"input_tokens"`
+	OutputTokens             *int64 `json:"output_tokens"`
+	CacheReadInputTokens     *int64 `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens *int64 `json:"cache_creation_input_tokens"`
+	ThinkingTokens           *int64 `json:"thinking_tokens"`
+	InputTokensDetails       *struct {
+		CachedTokens *int64 `json:"cached_tokens"`
+	} `json:"input_tokens_details"`
+	OutputTokensDetails *struct {
+		ReasoningTokens *int64 `json:"reasoning_tokens"`
+		ThinkingTokens  *int64 `json:"thinking_tokens"`
+	} `json:"output_tokens_details"`
 }
 
 type responseContent struct {
@@ -107,17 +122,18 @@ type responseContent struct {
 }
 
 type completionBody struct {
-	ID                string            `json:"id"`
-	Type              string            `json:"type"`
-	Object            string            `json:"object"`
-	Role              string            `json:"role"`
-	Model             string            `json:"model"`
-	Status            string            `json:"status"`
-	StopReason        string            `json:"stop_reason"`
-	Error             json.RawMessage   `json:"error"`
-	IncompleteDetails json.RawMessage   `json:"incomplete_details"`
-	Usage             *responseUsage    `json:"usage"`
-	Content           []responseContent `json:"content"`
+	ID                string                  `json:"id"`
+	Type              string                  `json:"type"`
+	Object            string                  `json:"object"`
+	Role              string                  `json:"role"`
+	Model             string                  `json:"model"`
+	Status            string                  `json:"status"`
+	StopReason        string                  `json:"stop_reason"`
+	Error             json.RawMessage         `json:"error"`
+	IncompleteDetails json.RawMessage         `json:"incomplete_details"`
+	Usage             *responseUsage          `json:"usage"`
+	Reasoning         struct{ Effort string } `json:"reasoning"`
+	Content           []responseContent       `json:"content"`
 	Output            []struct {
 		Type    string            `json:"type"`
 		Role    string            `json:"role"`
@@ -195,7 +211,42 @@ func validateModelResponse(provider, requestedModel string, response modelRespon
 	if body.Usage == nil || body.Usage.InputTokens == nil || body.Usage.OutputTokens == nil || *body.Usage.InputTokens < 0 || *body.Usage.OutputTokens <= 0 {
 		return modelResponseInfo{}, errors.New("The provider did not report valid generation usage.")
 	}
-	return modelResponseInfo{Model: body.Model, InputTokens: *body.Usage.InputTokens, OutputTokens: *body.Usage.OutputTokens}, nil
+	info := modelResponseInfo{
+		Model: body.Model, InputTokens: *body.Usage.InputTokens, OutputTokens: *body.Usage.OutputTokens,
+		ReasoningEffort: body.Reasoning.Effort,
+	}
+	if details := body.Usage.OutputTokensDetails; details != nil {
+		info.ReasoningTokens = details.ReasoningTokens
+	}
+	if provider == "claude" {
+		// Messages reports cached input separately from input_tokens. Responses
+		// already includes cached input in its total, so only Claude needs a sum.
+		info.CacheReadTokens = body.Usage.CacheReadInputTokens
+		info.CacheCreationTokens = body.Usage.CacheCreationInputTokens
+		for _, tokens := range []*int64{info.CacheReadTokens, info.CacheCreationTokens} {
+			if tokens == nil {
+				continue
+			}
+			if *tokens < 0 || *tokens > math.MaxInt64-info.InputTokens {
+				return modelResponseInfo{}, errors.New("The provider did not report valid cached input usage.")
+			}
+			info.InputTokens += *tokens
+		}
+		if details := body.Usage.OutputTokensDetails; details != nil && details.ThinkingTokens != nil {
+			info.ReasoningTokens = details.ThinkingTokens
+		} else if info.ReasoningTokens == nil {
+			info.ReasoningTokens = body.Usage.ThinkingTokens
+		}
+	} else if details := body.Usage.InputTokensDetails; details != nil {
+		info.CacheReadTokens = details.CachedTokens
+		if tokens := info.CacheReadTokens; tokens != nil && (*tokens < 0 || *tokens > info.InputTokens) {
+			return modelResponseInfo{}, errors.New("The provider did not report valid cached input usage.")
+		}
+	}
+	if tokens := info.ReasoningTokens; tokens != nil && (*tokens < 0 || *tokens > info.OutputTokens) {
+		return modelResponseInfo{}, errors.New("The provider did not report valid reasoning usage.")
+	}
+	return info, nil
 }
 
 func hasJSONValue(value json.RawMessage) bool {

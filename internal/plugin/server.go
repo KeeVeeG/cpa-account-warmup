@@ -11,13 +11,14 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 
 	"cliproxy-account-warmup/internal/warmup"
 	"gopkg.in/yaml.v3"
 )
 
 const ID = "cliproxy-account-warmup"
-const Version = "0.1.0"
+const Version = "0.2.0"
 const APIBase = "/v0/management/plugins/" + ID
 const ResourceBase = "/v0/resource/plugins/" + ID
 
@@ -31,7 +32,13 @@ var RepositoryURL = "local:" + ID
 //go:embed web/*
 var assets embed.FS
 
-type Server struct{ engine *warmup.Engine }
+type Server struct {
+	engine    *warmup.Engine
+	mu        sync.Mutex
+	local     *localServer
+	closed    bool
+	closeOnce sync.Once
+}
 
 func New(host warmup.Host) *Server {
 	return &Server{engine: warmup.New(host)}
@@ -96,19 +103,35 @@ func (s *Server) dispatch(method string, raw []byte) (any, error) {
 		if err := s.engine.Configure(cfg); err != nil {
 			return nil, err
 		}
+		if method == "plugin.register" {
+			if err := s.startLocal(); err != nil {
+				return nil, errors.New("Could not start the Account Warmup interface.")
+			}
+		}
 		return registration(), nil
 	case "plugin.shutdown":
+		s.Close()
 		return struct{}{}, nil
 	case "management.register":
+		resources := []map[string]string{
+			{"Path": "/status"},
+			{"Path": "/app.js"},
+			{"Path": "/styles.css"},
+		}
+		s.mu.Lock()
+		if s.local != nil && !s.closed {
+			resources = append(resources, map[string]string{
+				"Path": s.local.launchPath, "Menu": "Account Warmup",
+				"Description": "Warm up Claude or Codex accounts individually.",
+			})
+		}
+		s.mu.Unlock()
 		return map[string]any{
 			"routes": []map[string]string{
 				{"Method": "GET", "Path": "/plugins/" + ID + "/state"},
 				{"Method": "POST", "Path": "/plugins/" + ID + "/warmup"},
 			},
-			"resources": []map[string]string{
-				{"Path": "/status", "Menu": "Account Warmup", "Description": "Warm up Claude or Codex accounts individually."},
-				{"Path": "/app.js"}, {"Path": "/styles.css"},
-			},
+			"resources": resources,
 		}, nil
 	case "management.handle":
 		var req managementRequest
@@ -176,6 +199,12 @@ func registration() any {
 
 func (s *Server) management(req managementRequest) managementResponse {
 	if req.Method == "GET" {
+		s.mu.Lock()
+		local := s.local
+		s.mu.Unlock()
+		if local != nil && req.Path == ResourceBase+local.launchPath {
+			return local.launch()
+		}
 		var name, contentType string
 		switch req.Path {
 		case ResourceBase + "/status":
@@ -186,11 +215,7 @@ func (s *Server) management(req managementRequest) managementResponse {
 			name, contentType = "styles.css", "text/css; charset=utf-8"
 		}
 		if name != "" {
-			body, err := assets.ReadFile("web/" + name)
-			if err != nil {
-				return jsonResponse(500, map[string]string{"error": "Asset unavailable."})
-			}
-			return managementResponse{StatusCode: 200, Headers: responseHeaders(contentType), Body: body}
+			return assetResponse(name, contentType)
 		}
 	}
 	if req.Path != APIBase+"/state" && req.Path != APIBase+"/warmup" {
@@ -204,6 +229,10 @@ func (s *Server) management(req managementRequest) managementResponse {
 	if req.HostCallbackID == "" {
 		return jsonResponse(503, map[string]string{"error": "The host did not provide a callback context. CLIProxyAPI 8.0.27 or newer is required."})
 	}
+	return s.action(req)
+}
+
+func (s *Server) action(req managementRequest) managementResponse {
 	if req.Path == APIBase+"/state" && req.Method == "GET" {
 		state, err := s.engine.State(req.HostCallbackID)
 		if err != nil {
@@ -216,7 +245,7 @@ func (s *Server) management(req managementRequest) managementResponse {
 		if err != nil || mediaType != "application/json" {
 			return jsonResponse(415, map[string]string{"error": "Send application/json."})
 		}
-		if len(req.Body) > 8192 {
+		if len(req.Body) > maxRequestBody {
 			return jsonResponse(413, map[string]string{"error": "Request body is too large."})
 		}
 		if req.Headers.Get("Sec-Fetch-Site") == "cross-site" {

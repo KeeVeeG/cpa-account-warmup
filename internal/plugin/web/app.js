@@ -2,7 +2,9 @@
 "use strict";
 
 (() => {
-  const API_BASE = "/v0/management/plugins/cliproxy-account-warmup";
+  const API_BASE = "/api";
+  const OPEN_FROM_PLUGINS =
+    "Open Account Warmup from Plugins in EasyCLIProxyAPI.";
   const PROVIDERS = ["claude", "codex"];
   const RESULT_STATUSES = new Set(["success", "error", "skipped", "uncertain"]);
   const STATUS_LABELS = {
@@ -18,15 +20,21 @@
     stopped: "Not sent",
   };
   const $ = (selector, root = document) => root.querySelector(selector);
-  const keyInput = $("#management-key");
   const notice = $("#notice");
   const cards = Object.fromEntries(
     PROVIDERS.map((provider) => [provider, $(`[data-provider="${provider}"]`)]),
   );
+  const tabs = Object.fromEntries(
+    PROVIDERS.map((provider) => [
+      provider,
+      $(`[data-provider-tab="${provider}"]`),
+    ]),
+  );
   const state = {
-    key: "",
+    sessionToken: "",
     connected: false,
     loading: false,
+    provider: "claude",
     session: 0,
     accounts: [],
     selections: new Map(),
@@ -83,7 +91,7 @@
         signal: controller.signal,
         headers: {
           Accept: "application/json",
-          Authorization: `Bearer ${state.key}`,
+          Authorization: `Bearer ${state.sessionToken}`,
           ...(body ? { "Content-Type": "application/json" } : {}),
         },
         ...(body ? { body: JSON.stringify(body) } : {}),
@@ -129,7 +137,7 @@
       throw new APIError(
         body
           ? "The connection was interrupted. The request may have reached the provider; the plugin will not retry it automatically."
-          : "Unable to connect to the proxy. Check that CLIProxyAPI is running, then try connecting again.",
+          : "Unable to connect to the proxy. Reopen Account Warmup from Plugins.",
       );
     } finally {
       clearTimeout(timer);
@@ -138,16 +146,14 @@
 
   function invalidateConnection(message) {
     state.session += 1;
-    state.key = "";
+    state.sessionToken = "";
     state.connected = false;
     state.loading = false;
-    keyInput.value = "";
     for (const provider of PROVIDERS) {
       if (state.runs[provider]?.active) state.runs[provider].stop = true;
     }
     showNotice(message);
     render();
-    keyInput.focus();
   }
 
   function normalizeAccounts(accounts) {
@@ -203,14 +209,13 @@
         }
       }
       state.connected = true;
-      keyInput.value = "";
       $("#last-refreshed").textContent =
         `Updated ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
     } catch (error) {
       if (session !== state.session) return;
       if (error.status === 401 || error.status === 403)
         invalidateConnection(
-          "The management key was rejected. Enter a valid key to reconnect.",
+          "Session expired. Reopen Account Warmup from Plugins.",
         );
       else showNotice(error.message || "Unable to load accounts.");
     } finally {
@@ -223,23 +228,35 @@
 
   function displayResult(account) {
     const result = state.results.get(accountKey(account.provider, account.id));
-    if (result) return result;
     if (account.disabled)
       return {
+        ...result,
         status: "disabled",
         message: account.reason || "This account is disabled in CLIProxyAPI.",
       };
     if (account.unavailable)
       return {
+        ...result,
         status: "unavailable",
         message: account.reason || "This account is currently unavailable.",
       };
     if (!isEligible(account))
       return {
+        ...result,
         status: "skipped",
         message: account.reason || "This account is not eligible for warmup.",
       };
-    return { status: "ready", message: "Ready for one minimal request" };
+    return result || { status: "ready", message: "No request sent" };
+  }
+
+  function selectProvider(provider) {
+    state.provider = provider;
+    for (const name of PROVIDERS) {
+      const selected = name === provider;
+      tabs[name].setAttribute("aria-selected", String(selected));
+      tabs[name].tabIndex = selected ? 0 : -1;
+      cards[name].hidden = !selected;
+    }
   }
 
   function renderCard(provider) {
@@ -249,15 +266,18 @@
     const run = state.runs[provider];
     const busy = run?.active === true;
     const enabled = state.connected && !state.loading && !busy;
-    $(".account-count", card).textContent = state.connected
-      ? `${accounts.length} account${accounts.length === 1 ? "" : "s"}`
-      : "— accounts";
+    $(".account-count", tabs[provider]).textContent = String(accounts.length);
+    tabs[provider].dataset.running = String(busy);
+    tabs[provider].setAttribute(
+      "aria-label",
+      `${providerName(provider)}, ${accounts.length} account${accounts.length === 1 ? "" : "s"}${busy ? ", warmup running" : ""}`,
+    );
     $(".model-value", card).textContent = state.config[`${provider}_model`];
     $(".selection-count", card).textContent = state.loading
       ? "Loading accounts…"
       : state.connected
         ? `${selected.length} of ${accounts.filter(isEligible).length} eligible selected`
-        : "Connect to load accounts";
+        : "No accounts loaded";
     $(".select-all", card).disabled =
       !enabled || accounts.every((account) => !isEligible(account));
     $(".clear-selection", card).disabled = !enabled || selected.length === 0;
@@ -279,8 +299,8 @@
       empty.textContent = state.loading
         ? "Loading accounts from your proxy…"
         : state.connected
-          ? `No ${providerName(provider)} accounts found. Add an account in CLIProxyAPI, then refresh.`
-          : `Your ${providerName(provider)} accounts will appear here.`;
+          ? `No ${providerName(provider)} accounts found.`
+          : "No accounts loaded.";
       list.append(empty);
     } else {
       for (const account of accounts) {
@@ -298,15 +318,49 @@
           state.selections.set(key, checkbox.checked);
           renderCard(provider);
         });
-        $(".account-label", row).textContent =
+        const label =
           typeof account.label === "string" && account.label
             ? account.label
             : account.id;
-        $(".account-detail", row).textContent =
-          typeof result.message === "string" ? result.message : "";
+        $(".account-label", row).textContent = label;
+        $(".account-label", row).title = label;
+        $(".account-provider", row).textContent = providerName(provider);
+        $(".account-icon", row).append(
+          $(".provider-icon", tabs[provider]).cloneNode(true),
+        );
+        checkbox.setAttribute("aria-label", `Select ${label}`);
+        const details = [];
+        if (result.message && result.status !== "success") {
+          details.push(result.message);
+        }
+        if (
+          Number.isFinite(result.input_tokens) &&
+          Number.isFinite(result.output_tokens)
+        ) {
+          const tokens = [
+            `${result.input_tokens} input`,
+            `${result.output_tokens} output`,
+          ];
+          if (Number.isFinite(result.reasoning_tokens)) {
+            tokens.push(`${result.reasoning_tokens} reasoning`);
+          }
+          details.push(tokens.join(" · "));
+        }
+        $(".account-detail", row).textContent = details.join(". ");
         const badge = $(".account-status", row);
         badge.dataset.status = result.status;
         badge.textContent = STATUS_LABELS[result.status] || "Unknown";
+        const finished = new Date(result.finished_at);
+        if (Number.isFinite(finished.getTime())) {
+          const time = $(".account-time", row);
+          time.dateTime = finished.toISOString();
+          time.title = finished.toLocaleString();
+          time.textContent = finished.toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          });
+          time.hidden = false;
+        }
         list.append(fragment);
       }
     }
@@ -328,19 +382,17 @@
   }
 
   function render() {
-    $("#login-panel").hidden = state.connected;
-    $("#connect-button").disabled = state.loading || isActive();
-    keyInput.disabled = state.loading || isActive();
+    $("#account-summary").textContent = state.connected
+      ? `${state.accounts.length} account${state.accounts.length === 1 ? "" : "s"}`
+      : "Account Warmup";
     $("#connection-dot").classList.toggle("connected", state.connected);
     $("#connection-label").textContent = state.loading
-      ? "Connecting…"
+      ? "Loading…"
       : state.connected
-        ? "Connected to proxy"
+        ? "Connected"
         : "Not connected";
-    $("#lock-button").hidden = !state.connected;
-    $("#lock-button").disabled = isActive();
     $("#refresh-button").disabled =
-      !state.connected || state.loading || isActive();
+      !state.sessionToken || state.loading || isActive();
     for (const provider of PROVIDERS) renderCard(provider);
   }
 
@@ -419,7 +471,7 @@
           run.stop = true;
           if (authFailure)
             invalidateConnection(
-              "The management key was rejected. Pending warmups have stopped. Enter a valid key to reconnect.",
+              "Session expired. Reopen Account Warmup from Plugins.",
             );
           else
             showNotice(
@@ -452,29 +504,12 @@
     }
   }
 
-  $("#login-form").addEventListener("submit", (event) => {
-    event.preventDefault();
-    if (state.loading || isActive()) return;
-    const key = keyInput.value.trim();
-    if (!key) return;
-    state.key = key;
-    state.session += 1;
-    void loadState();
-  });
   $("#refresh-button").addEventListener("click", () => {
     void loadState();
   });
-  $("#lock-button").addEventListener("click", () => {
-    if (isActive()) return;
-    state.accounts = [];
-    state.results.clear();
-    state.selections.clear();
-    state.runs = { claude: null, codex: null };
-    $("#last-refreshed").textContent = "";
-    invalidateConnection("");
-  });
   for (const provider of PROVIDERS) {
     const card = cards[provider];
+    tabs[provider].addEventListener("click", () => selectProvider(provider));
     $(".select-all", card).addEventListener("click", () => {
       for (const account of accountList(provider))
         if (isEligible(account))
@@ -496,11 +531,38 @@
       }
     });
   }
+  $(".provider-tabs").addEventListener("keydown", (event) => {
+    let provider;
+    if (event.key === "Home") provider = PROVIDERS[0];
+    else if (event.key === "End") provider = PROVIDERS[PROVIDERS.length - 1];
+    else if (event.key === "ArrowLeft" || event.key === "ArrowRight")
+      provider = PROVIDERS.find((name) => name !== state.provider);
+    else return;
+    event.preventDefault();
+    selectProvider(provider);
+    tabs[provider].focus();
+  });
   window.addEventListener("beforeunload", (event) => {
     if (isActive()) {
       event.preventDefault();
       event.returnValue = "";
     }
   });
-  render();
+  const sessionToken = new URLSearchParams(window.location.hash.slice(1)).get(
+    "session",
+  );
+  if (window.location.hash) {
+    window.history.replaceState(
+      null,
+      "",
+      window.location.pathname + window.location.search,
+    );
+  }
+  if (sessionToken && /^[a-f0-9]{64}$/.test(sessionToken)) {
+    state.sessionToken = sessionToken;
+    void loadState();
+  } else {
+    showNotice(OPEN_FROM_PLUGINS);
+    render();
+  }
 })();

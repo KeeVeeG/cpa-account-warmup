@@ -151,6 +151,46 @@ func TestWarmPinsEachProviderWithoutCredentialSecrets(t *testing.T) {
 	}
 }
 
+func TestWarmReportsKnownUsageWithoutInventingMissingCounts(t *testing.T) {
+	for _, reported := range []bool{false, true} {
+		usage := `{"input_tokens":6,"output_tokens":1}`
+		if reported {
+			usage = `{"input_tokens":6,"output_tokens":1,"cache_read_input_tokens":100,"cache_creation_input_tokens":40,"output_tokens_details":{"thinking_tokens":0}}`
+		}
+		host := &testHost{
+			entries:  []authEntry{oauth("chosen-account", "claude")},
+			response: completionWithUsage(t, "claude", usage),
+		}
+		result, err := newTestEngine(host, Config{}).Warm(WarmRequest{"claude", "chosen-account", "request-0001"}, "")
+		if err != nil || result.Status != "success" {
+			t.Fatalf("Warm = %#v, %v", result, err)
+		}
+		if reported {
+			if result.InputTokens != 146 || result.CacheReadTokens == nil || *result.CacheReadTokens != 100 || result.CacheCreationTokens == nil || *result.CacheCreationTokens != 40 || result.ReasoningTokens == nil || *result.ReasoningTokens != 0 {
+				t.Fatalf("lost reported token breakdown: %#v", result)
+			}
+		} else if result.InputTokens != 6 || result.CacheReadTokens != nil || result.CacheCreationTokens != nil || result.ReasoningTokens != nil {
+			t.Fatalf("inferred missing token breakdown: %#v", result)
+		}
+		raw, err := json.Marshal(result)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			t.Fatal(err)
+		}
+		for _, field := range []string{"cache_read_tokens", "cache_creation_tokens", "reasoning_tokens"} {
+			if _, present := fields[field]; present != reported {
+				t.Fatalf("%s presence = %v, want %v: %s", field, present, reported, raw)
+			}
+		}
+		if reported && string(fields["reasoning_tokens"]) != "0" {
+			t.Fatalf("reported zero reasoning did not survive JSON: %s", raw)
+		}
+	}
+}
+
 func TestWarmRevalidatesAccountAndRefusesInvalidSelections(t *testing.T) {
 	tests := []struct {
 		name            string

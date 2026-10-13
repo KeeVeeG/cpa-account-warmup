@@ -9,242 +9,240 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'"
     />
-    <title>Account Warmup · CLIProxyAPI</title>
+    <title>Account Warmup</title>
     <link rel="stylesheet" href="./styles.css" />
     <script src="./app.js" defer></script>
   </head>
   <body>
     <main class="workspace">
-      <header class="page-header">
-        <div class="brand">
-          <span class="brand-symbol" aria-hidden="true">↗</span
-          ><span
-            >CLIProxyAPI<span class="brand-divider">/</span>ACCOUNT WARMUP</span
-          >
+      <header class="toolbar">
+        <div class="toolbar-summary">
+          <span class="toolbar-icon" aria-hidden="true">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.7"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M4.5 18a9 9 0 1 1 15 0M12 12l4-4" />
+              <circle cx="12" cy="12" r="1" />
+            </svg>
+          </span>
+          <h1 id="account-summary">Account Warmup</h1>
         </div>
+        <button
+          id="refresh-button"
+          class="button secondary"
+          type="button"
+          disabled
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path
+              d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1"
+            />
+          </svg>
+          Refresh accounts
+        </button>
+      </header>
+
+      <div id="notice" class="notice" role="alert" hidden></div>
+
+      <div class="provider-tabs" role="tablist" aria-label="Provider">
+        <button
+          id="claude-tab"
+          type="button"
+          role="tab"
+          aria-selected="true"
+          aria-controls="claude-panel"
+          data-provider-tab="claude"
+        >
+          <svg
+            class="provider-icon claude-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            aria-hidden="true"
+          >
+            <path
+              d="M12 2v6m0 8v6M2 12h6m8 0h6M5 5l4.3 4.3m5.4 5.4L19 19M5 19l4.3-4.3m5.4-5.4L19 5"
+            />
+          </svg>
+          Claude <span class="account-count">0</span>
+        </button>
+        <button
+          id="codex-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="codex-panel"
+          tabindex="-1"
+          data-provider-tab="codex"
+        >
+          <svg
+            class="provider-icon codex-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <rect x="3" y="3" width="18" height="18" rx="4" />
+            <path d="m7 8 3 4-3 4m6 0h4" />
+          </svg>
+          Codex <span class="account-count">0</span>
+        </button>
+      </div>
+
+      <section
+        id="claude-panel"
+        class="provider-panel"
+        data-provider="claude"
+        role="tabpanel"
+        aria-labelledby="claude-tab"
+      >
+        <div class="provider-controls">
+          <div class="provider-details">
+            <div class="model-line">
+              <span class="model-value">claude-haiku-5-5</span
+              ><span class="model-effort">Thinking off · 1 output token</span>
+            </div>
+            <div class="selection-bar">
+              <span class="selection-count">No accounts loaded</span>
+              <button class="text-button select-all" type="button" disabled>
+                Select eligible
+              </button>
+              <button
+                class="text-button clear-selection"
+                type="button"
+                disabled
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+          <div class="provider-actions">
+            <button class="button secondary stop-button" type="button" hidden>
+              Stop
+            </button>
+            <button class="button warm-button" type="button" disabled>
+              Warm up Claude
+            </button>
+          </div>
+        </div>
+        <div class="run-progress" hidden>
+          <div class="progress-label">
+            <span class="progress-message" role="status"></span
+            ><span class="progress-count"></span>
+          </div>
+          <progress
+            max="1"
+            value="0"
+            aria-label="Claude warmup progress"
+          ></progress>
+        </div>
+        <div class="account-list" aria-label="Claude accounts"></div>
+      </section>
+
+      <section
+        id="codex-panel"
+        class="provider-panel"
+        data-provider="codex"
+        role="tabpanel"
+        aria-labelledby="codex-tab"
+        hidden
+      >
+        <div class="provider-controls">
+          <div class="provider-details">
+            <div class="model-line">
+              <span class="model-value">gpt-6-luna</span
+              ><span class="model-effort">Reasoning off</span>
+            </div>
+            <div class="selection-bar">
+              <span class="selection-count">No accounts loaded</span>
+              <button class="text-button select-all" type="button" disabled>
+                Select eligible
+              </button>
+              <button
+                class="text-button clear-selection"
+                type="button"
+                disabled
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+          <div class="provider-actions">
+            <button class="button secondary stop-button" type="button" hidden>
+              Stop
+            </button>
+            <button class="button warm-button" type="button" disabled>
+              Warm up Codex
+            </button>
+          </div>
+        </div>
+        <div class="run-progress" hidden>
+          <div class="progress-label">
+            <span class="progress-message" role="status"></span
+            ><span class="progress-count"></span>
+          </div>
+          <progress
+            max="1"
+            value="0"
+            aria-label="Codex warmup progress"
+          ></progress>
+        </div>
+        <div class="account-list" aria-label="Codex accounts"></div>
+      </section>
+
+      <footer class="page-footer">
+        <span>Results confirm requests, not quota reset times.</span>
         <div class="connection">
+          <span id="last-refreshed"></span>
           <span
             id="connection-dot"
             class="connection-dot"
             aria-hidden="true"
-          ></span
-          ><span id="connection-label">Not connected</span
-          ><button id="lock-button" class="text-button" type="button" hidden>
-            Lock
-          </button>
+          ></span>
+          <span id="connection-label">Not connected</span>
         </div>
-      </header>
-
-      <section class="intro" aria-labelledby="page-title">
-        <div>
-          <h1 id="page-title">Account Warmup</h1>
-          <p class="intro-copy">
-            Select accounts and send a minimal request to Claude or Codex.
-          </p>
-        </div>
-        <button
-          id="refresh-button"
-          class="button secondary refresh-button"
-          type="button"
-          disabled
-        >
-          <span aria-hidden="true">↻</span> Refresh accounts
-        </button>
-      </section>
-
-      <section
-        id="login-panel"
-        class="login-panel"
-        aria-labelledby="login-title"
-      >
-        <div class="login-copy">
-          <span class="lock-symbol" aria-hidden="true">⌘</span>
-          <div>
-            <h2 id="login-title">Connect to your proxy</h2>
-            <p>
-              Use your CLIProxyAPI management key. It stays in this page's
-              memory and is cleared when you lock or reload.
-            </p>
-          </div>
-        </div>
-        <form id="login-form" class="login-form">
-          <label class="visually-hidden" for="management-key"
-            >Management key</label
-          >
-          <input
-            id="management-key"
-            name="management-key"
-            type="password"
-            placeholder="Management key"
-            autocomplete="off"
-            spellcheck="false"
-            required
-          />
-          <button
-            id="connect-button"
-            class="button connect-button"
-            type="submit"
-          >
-            Connect <span aria-hidden="true">→</span>
-          </button>
-        </form>
-      </section>
-
-      <div id="notice" class="notice" role="alert" hidden></div>
-      <div class="providers">
-        <section
-          class="provider-card claude"
-          data-provider="claude"
-          aria-labelledby="claude-title"
-        >
-          <div class="card-heading">
-            <div class="provider-identity">
-              <span class="provider-symbol" aria-hidden="true">✳</span>
-              <div>
-                <p class="provider-kicker">ANTHROPIC</p>
-                <h2 id="claude-title">Claude</h2>
-              </div>
-            </div>
-            <span class="account-count">— accounts</span>
-          </div>
-          <div class="model-line">
-            <span class="model-label">Warmup model</span
-            ><code class="model-value">claude-haiku-5-5</code>
-          </div>
-          <p class="request-settings">
-            Low effort · 32-token generation budget, including thinking
-          </p>
-          <div class="selection-bar">
-            <span class="selection-count">Connect to load accounts</span>
-            <div>
-              <button class="text-button select-all" type="button" disabled>
-                Select eligible</button
-              ><span class="selection-divider" aria-hidden="true">/</span
-              ><button
-                class="text-button clear-selection"
-                type="button"
-                disabled
-              >
-                Clear
-              </button>
-            </div>
-          </div>
-          <div class="account-list" aria-label="Claude accounts">
-            <p class="empty-state">Your Claude accounts will appear here.</p>
-          </div>
-          <div class="run-progress" hidden>
-            <div class="progress-label">
-              <span class="progress-message" role="status"></span
-              ><span class="progress-count"></span>
-            </div>
-            <progress
-              max="1"
-              value="0"
-              aria-label="Claude warmup progress"
-            ></progress>
-          </div>
-          <div class="card-actions">
-            <button class="button warm-button" type="button" disabled>
-              Warm up Claude <span aria-hidden="true">↗</span></button
-            ><button class="button secondary stop-button" type="button" hidden>
-              Stop
-            </button>
-          </div>
-          <p class="provider-note">
-            The plugin does not retry. Proxy retry settings still apply.
-          </p>
-        </section>
-
-        <section
-          class="provider-card codex"
-          data-provider="codex"
-          aria-labelledby="codex-title"
-        >
-          <div class="card-heading">
-            <div class="provider-identity">
-              <span class="provider-symbol codex-symbol" aria-hidden="true"
-                >⌁</span
-              >
-              <div>
-                <p class="provider-kicker">OPENAI</p>
-                <h2 id="codex-title">Codex</h2>
-              </div>
-            </div>
-            <span class="account-count">— accounts</span>
-          </div>
-          <div class="model-line">
-            <span class="model-label">Warmup model</span
-            ><code class="model-value">gpt-6-luna</code>
-          </div>
-          <p class="request-settings">
-            Low reasoning · No hard output token limit
-          </p>
-          <div class="selection-bar">
-            <span class="selection-count">Connect to load accounts</span>
-            <div>
-              <button class="text-button select-all" type="button" disabled>
-                Select eligible</button
-              ><span class="selection-divider" aria-hidden="true">/</span
-              ><button
-                class="text-button clear-selection"
-                type="button"
-                disabled
-              >
-                Clear
-              </button>
-            </div>
-          </div>
-          <div class="account-list" aria-label="Codex accounts">
-            <p class="empty-state">Your Codex accounts will appear here.</p>
-          </div>
-          <div class="run-progress" hidden>
-            <div class="progress-label">
-              <span class="progress-message" role="status"></span
-              ><span class="progress-count"></span>
-            </div>
-            <progress
-              max="1"
-              value="0"
-              aria-label="Codex warmup progress"
-            ></progress>
-          </div>
-          <div class="card-actions">
-            <button class="button warm-button" type="button" disabled>
-              Warm up Codex <span aria-hidden="true">↗</span></button
-            ><button class="button secondary stop-button" type="button" hidden>
-              Stop
-            </button>
-          </div>
-          <p class="provider-note">
-            The plugin does not retry. Proxy retry settings still apply.
-          </p>
-        </section>
-      </div>
-
-      <footer class="page-footer">
-        <span class="footer-icon" aria-hidden="true">ⓘ</span>
-        <p>
-          A successful request confirms the model responded. Subscription
-          windows and reset times are controlled by the provider; this plugin
-          does not verify that a five-hour window started.
-        </p>
-        <span id="last-refreshed" class="last-refreshed"></span>
       </footer>
       <noscript
         ><p class="notice">
-          JavaScript is required to connect and warm up accounts.
+          JavaScript is required to warm up accounts.
         </p></noscript
       >
     </main>
 
     <template id="account-template">
-      <label class="account-row"
-        ><input class="account-checkbox" type="checkbox" /><span
-          class="account-body"
-          ><span class="account-label"></span
-          ><span class="account-detail"></span></span
-        ><span class="account-status"></span
-      ></label>
+      <label class="account-row">
+        <span class="account-heading">
+          <span class="account-icon" aria-hidden="true"></span>
+          <span class="account-body"
+            ><span class="account-label"></span
+            ><span class="account-provider"></span
+          ></span>
+          <input class="account-checkbox" type="checkbox" />
+        </span>
+        <span class="account-meta"
+          ><span class="account-status"></span
+          ><time class="account-time" hidden></time
+        ></span>
+        <span class="account-detail"></span>
+      </label>
     </template>
   </body>
 </html>

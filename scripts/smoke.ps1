@@ -90,6 +90,7 @@ $startInfo.Environment['NO_PROXY'] = '127.0.0.1,localhost,::1'
 
 $handler = [Net.Http.HttpClientHandler]::new()
 $handler.UseProxy = $false
+$handler.AllowAutoRedirect = $false
 $client = [Net.Http.HttpClient]::new($handler)
 $client.Timeout = [TimeSpan]::FromSeconds(3)
 $process = [Diagnostics.Process]::new()
@@ -99,12 +100,24 @@ $errorTask = $null
 $checks = [Collections.Generic.List[string]]::new()
 
 function Invoke-SmokeRequest {
-    param([string]$Path, [string]$Method = 'GET', [switch]$Authenticated, [string]$Body)
-    $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::new($Method), "$baseURL$Path")
+    param(
+        [string]$Path,
+        [string]$Method = 'GET',
+        [switch]$Authenticated,
+        [string]$Body,
+        [string]$RequestBase = $baseURL,
+        [string]$Token,
+        [string]$Origin
+    )
+    $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::new($Method), "$RequestBase$Path")
     try {
         if ($Authenticated) {
             $request.Headers.Authorization = [Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $managementKey)
         }
+        if ($Token) {
+            $request.Headers.Authorization = [Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $Token)
+        }
+        if ($Origin) { $null = $request.Headers.TryAddWithoutValidation('Origin', $Origin) }
         if ($PSBoundParameters.ContainsKey('Body')) {
             $request.Content = [Net.Http.StringContent]::new($Body, [Text.Encoding]::UTF8, 'application/json')
         }
@@ -114,6 +127,8 @@ function Invoke-SmokeRequest {
                 Status = [int]$response.StatusCode
                 Body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
                 ContentType = [string]$response.Content.Headers.ContentType
+                Location = [string]$response.Headers.Location
+                CacheControl = [string]$response.Headers.CacheControl
             }
         }
         finally { $response.Dispose() }
@@ -157,6 +172,25 @@ try {
     $checks.Add('Native ABI registration and metadata')
 
     $resourceBase = '/v0/resource/plugins/cliproxy-account-warmup'
+    $launchPath = [string]$registered[0].menus[0].path
+    if ($launchPath -cnotmatch ('^' + [regex]::Escape($resourceBase) + '/launch/[a-f0-9]{64}$')) {
+        throw 'The plugin menu did not expose a valid launch capability.'
+    }
+    $checks.Add('Authenticated menu contains an unguessable launch capability')
+    $launchResponse = Invoke-SmokeRequest -Path $launchPath
+    Assert-Status $launchResponse 302 'Menu launch redirects to the local interface'
+    if ($launchResponse.Location -cnotmatch '^http://127\.0\.0\.1:([0-9]+)/#session=([a-f0-9]{64})$') {
+        throw 'The launch did not return a loopback session fragment.'
+    }
+    $localPort = [int]$Matches[1]
+    $sessionToken = $Matches[2]
+    if ($localPort -lt 1 -or $localPort -gt 65535 -or $localPort -eq $port -or
+        $launchResponse.CacheControl -ne 'no-store' -or $launchResponse.Body.Contains($sessionToken)) {
+        throw 'The launch response exposed an invalid or cacheable session.'
+    }
+    $localBase = "http://127.0.0.1:$localPort"
+    $checks.Add('Session is carried only in the non-cacheable redirect fragment')
+
     foreach ($asset in @(
         @{ Route = 'status'; File = 'index.html'; Type = 'text/html' },
         @{ Route = 'app.js'; File = 'app.js'; Type = 'text/javascript' },
@@ -168,8 +202,44 @@ try {
         if ($response.Body -cne $source -or -not $response.ContentType.StartsWith($asset.Type)) {
             throw "The host altered $($asset.File) or served it with an incorrect content type."
         }
+        if ($response.Body.Contains($sessionToken) -or $response.Body.Contains($launchPath) -or $response.Location) {
+            throw "The public $($asset.File) resource disclosed launch or session credentials."
+        }
         $checks.Add("Unescaped $($asset.File) content")
     }
+    $checks.Add('Core fallback resources do not disclose session or launch credentials')
+
+    $localPage = Invoke-SmokeRequest -RequestBase $localBase -Path '/'
+    Assert-Status $localPage 200 'Local interface is served without a management key'
+    $indexSource = [IO.File]::ReadAllText((Join-Path $repositoryRoot 'internal/plugin/web/index.html'))
+    if ($localPage.Body -cne $indexSource -or $localPage.Body.Contains($sessionToken) -or
+        $localPage.Body.Contains($launchPath) -or $localPage.Body.Contains($managementKey) -or
+        $localPage.Body -match '<input\b[^>]*\btype\s*=\s*["'']password["'']|id\s*=\s*["''](?:auth-form|management-key|api-key|login-form)["'']') {
+        throw 'The local page contains credentials, a management key form, or altered content.'
+    }
+    $checks.Add('Local HTML contains no management key form or embedded credentials')
+    foreach ($asset in @('app.js', 'styles.css')) {
+        $localAsset = Invoke-SmokeRequest -RequestBase $localBase -Path "/$asset"
+        Assert-Status $localAsset 200 "Local $asset resource"
+        $source = [IO.File]::ReadAllText((Join-Path $repositoryRoot "internal/plugin/web/$asset"))
+        if ($localAsset.Body -cne $source -or $localAsset.Body.Contains($sessionToken)) {
+            throw "The local $asset resource is altered or contains a session credential."
+        }
+    }
+
+    $localArguments = @{ RequestBase = $localBase; Origin = $localBase }
+    Assert-Status (Invoke-SmokeRequest @localArguments -Path '/api/state') 401 'Local state requires a session'
+    Assert-Status (Invoke-SmokeRequest @localArguments -Path '/api/state' -Token $managementKey) 401 'Local state rejects the management key as a session'
+    Assert-Status (Invoke-SmokeRequest @localArguments -Path '/api/warmup' -Method POST -Body '{}') 401 'Local warmup requires a session'
+    Assert-Status (Invoke-SmokeRequest -RequestBase $localBase -Origin 'https://invalid.example' -Token $sessionToken -Path '/api/state') 403 'Local state rejects a foreign origin'
+    $localStateResponse = Invoke-SmokeRequest @localArguments -Path '/api/state' -Token $sessionToken
+    Assert-Status $localStateResponse 200 'Local session can read state through the native host'
+    $localState = $localStateResponse.Body | ConvertFrom-Json
+    if (@($localState.accounts).Count -ne 0 -or @($localState.results).Count -ne 0) {
+        throw 'The local session unexpectedly returned accounts or warmup results.'
+    }
+    $checks.Add('Local session reads the isolated empty account state')
+    Assert-Status (Invoke-SmokeRequest @localArguments -Path '/api/warmup' -Method POST -Token $sessionToken -Body '{"provider":"all"}') 400 'Local invalid warmup is rejected without a model request'
 
     $apiBase = '/v0/management/plugins/cliproxy-account-warmup'
     Assert-Status (Invoke-SmokeRequest -Path "$apiBase/state") 401 'State requires authentication'
@@ -208,6 +278,14 @@ try {
     if (-not $process.WaitForExit(20000)) { throw 'The core did not shut down after the keep-alive timeout.' }
     if ($process.ExitCode -ne 0) { throw "The core exited with code $($process.ExitCode)." }
     $checks.Add('Graceful native host shutdown')
+    $localStillRunning = $false
+    try {
+        $null = Invoke-SmokeRequest @localArguments -Path '/api/state' -Token $sessionToken
+        $localStillRunning = $true
+    }
+    catch [Net.Http.HttpRequestException] { }
+    if ($localStillRunning) { throw 'The local interface remained reachable after the core exited.' }
+    $checks.Add('Local interface listener stops with the native host')
     $result = [ordered]@{ passed = $true; checks = $checks.ToArray(); directory = $runDirectory }
     [IO.File]::WriteAllText((Join-Path $runDirectory 'smoke-results.json'), ($result | ConvertTo-Json -Depth 4))
     Write-Host "Passed $($checks.Count) native smoke checks. Logs: $runDirectory"

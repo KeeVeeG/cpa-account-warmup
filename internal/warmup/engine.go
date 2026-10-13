@@ -63,18 +63,22 @@ type WarmRequest struct {
 // Result records only locally observed request outcomes. Success does not
 // establish that a particular subscription quota window has started.
 type Result struct {
-	RequestID     string     `json:"request_id"`
-	AuthID        string     `json:"auth_id"`
-	Provider      string     `json:"provider"`
-	Model         string     `json:"model"`
-	Status        string     `json:"status"`
-	Message       string     `json:"message"`
-	StartedAt     time.Time  `json:"started_at"`
-	FinishedAt    time.Time  `json:"finished_at"`
-	CooldownUntil *time.Time `json:"cooldown_until,omitempty"`
-	InputTokens   int64      `json:"input_tokens,omitempty"`
-	OutputTokens  int64      `json:"output_tokens,omitempty"`
-	Duplicate     bool       `json:"duplicate,omitempty"`
+	RequestID           string     `json:"request_id"`
+	AuthID              string     `json:"auth_id"`
+	Provider            string     `json:"provider"`
+	Model               string     `json:"model"`
+	Status              string     `json:"status"`
+	Message             string     `json:"message"`
+	StartedAt           time.Time  `json:"started_at"`
+	FinishedAt          time.Time  `json:"finished_at"`
+	CooldownUntil       *time.Time `json:"cooldown_until,omitempty"`
+	InputTokens         int64      `json:"input_tokens,omitempty"`
+	OutputTokens        int64      `json:"output_tokens,omitempty"`
+	CacheReadTokens     *int64     `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens *int64     `json:"cache_creation_tokens,omitempty"`
+	ReasoningTokens     *int64     `json:"reasoning_tokens,omitempty"`
+	ReasoningEffort     string     `json:"reasoning_effort,omitempty"`
+	Duplicate           bool       `json:"duplicate,omitempty"`
 }
 
 type State struct {
@@ -368,6 +372,8 @@ func (e *Engine) Warm(request WarmRequest, callbackID string) (Result, error) {
 	}
 	result.Status, result.Message = "success", "The requested model completed a response; the quota window has not been verified"
 	result.InputTokens, result.OutputTokens = info.InputTokens, info.OutputTokens
+	result.CacheReadTokens, result.CacheCreationTokens = info.CacheReadTokens, info.CacheCreationTokens
+	result.ReasoningTokens, result.ReasoningEffort = info.ReasoningTokens, info.ReasoningEffort
 	return finish(), nil
 }
 
