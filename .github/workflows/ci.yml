@@ -109,6 +109,9 @@ jobs:
           if ($libraries.Count -ne 1) { throw 'Expected exactly one plugin library at the archive root.' }
           ./scripts/smoke.ps1 -CorePath $core -LibraryPath $libraries[0].FullName
           ./scripts/smoke.ps1 -CorePath $core -LibraryPath $libraries[0].FullName -RecordUsage
+          if ($env:GOOS -eq 'darwin' -and $env:GOARCH -eq 'amd64') {
+            ./scripts/smoke.ps1 -CorePath $core -LibraryPath $libraries[0].FullName -StopHelper
+          }
       - name: Retain native smoke logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

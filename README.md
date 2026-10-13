@@ -56,6 +56,8 @@ bash scripts/build.sh
 
 The library and ZIP package are written to `dist/`.
 
+On Intel Macs, the plugin runs a bundled background helper and stops it when the plugin is unloaded.
+
 ## Tests
 
 With CGO enabled and a C compiler available:

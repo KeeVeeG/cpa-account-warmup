@@ -6,6 +6,7 @@ param(
     [string]$LibraryPath,
     [string]$Compiler,
     [switch]$RecordUsage,
+    [switch]$StopHelper,
     [string]$WorkDirectory = (Join-Path $PSScriptRoot '..\work\smoke')
 )
 
@@ -119,6 +120,19 @@ $process.StartInfo = $startInfo
 $outputTask = $null
 $errorTask = $null
 $checks = [Collections.Generic.List[string]]::new()
+$helperPath = $null
+$helperProcessID = $null
+
+function Get-HelperProcessIDs {
+    param([string]$Executable)
+    $processLines = & /bin/ps -axo 'pid=,command='
+    if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the smoke helper process.' }
+    foreach ($line in $processLines) {
+        if ($line -match '^\s*([0-9]+)\s+(.+)$' -and $Matches[2] -ceq $Executable) {
+            [int]$Matches[1]
+        }
+    }
+}
 
 function Invoke-SmokeRequest {
     param(
@@ -195,6 +209,21 @@ try {
         throw 'The registered plugin metadata or menu is incorrect.'
     }
     $checks.Add('Native ABI registration and metadata')
+    if ($IsMacOS -and $env:GOARCH -eq 'amd64') {
+        $helperDirectories = @(Get-ChildItem -LiteralPath $temporaryDirectory -Directory -Filter 'cpa-account-warmup.*')
+        if ($helperDirectories.Count -ne 1) { throw 'Expected one private Intel Mac helper directory.' }
+        $helperPath = Join-Path $helperDirectories[0].FullName 'helper'
+        $ownerOnly = [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite -bor [IO.UnixFileMode]::UserExecute
+        if ([IO.File]::GetUnixFileMode($helperDirectories[0].FullName) -ne $ownerOnly -or
+            [IO.File]::GetUnixFileMode($helperPath) -ne $ownerOnly) {
+            throw 'The Intel Mac helper is not restricted to its owner.'
+        }
+        $helperProcesses = @(Get-HelperProcessIDs -Executable $helperPath)
+        if ($helperProcesses.Count -ne 1) { throw 'Expected one running Intel Mac helper process.' }
+        $helperProcessID = $helperProcesses[0]
+        $checks.Add('Intel Mac helper runs from an owner-only temporary directory')
+    }
+    if ($StopHelper -and -not $helperPath) { throw 'StopHelper requires the Intel Mac helper build.' }
 
     if ($RecordUsage) {
         Assert-Status (Invoke-SmokeRequest -Path '/v1/models') 401 'Native API authentication is preserved'
@@ -329,11 +358,37 @@ try {
         throw 'The result history does not contain exactly the two skipped requests.'
     }
 
+    if ($StopHelper) {
+        $currentHelperProcesses = @(Get-HelperProcessIDs -Executable $helperPath)
+        if ($currentHelperProcesses.Count -ne 1 -or $currentHelperProcesses[0] -ne $helperProcessID) {
+            throw 'The smoke helper process changed before the crash test.'
+        }
+        Stop-Process -Id $helperProcessID -Force
+        $deadline = [DateTime]::UtcNow.AddSeconds(5)
+        do {
+            $failedState = Invoke-SmokeRequest -Path "$apiBase/state" -Authenticated
+            if ($failedState.Status -ge 500 -and $failedState.Status -le 599) { break }
+            Start-Sleep -Milliseconds 100
+        } while ([DateTime]::UtcNow -lt $deadline)
+        if ($failedState.Status -lt 500 -or $failedState.Status -gt 599) {
+            throw 'The plugin did not fail closed after its helper exited.'
+        }
+        $checks.Add('Helper death fails pending plugin RPC without crashing the core')
+        Assert-Status (Invoke-SmokeRequest -Path '/keep-alive' -Authenticated) 200 'The core remains responsive after helper death'
+    }
+
     # -password enables a 10-second keep-alive idle timeout and graceful shutdown.
     # Stop sending heartbeats and allow the host to invoke plugin shutdown itself.
     if (-not $process.WaitForExit(20000)) { throw 'The core did not shut down after the keep-alive timeout.' }
     if ($process.ExitCode -ne 0) { throw "The core exited with code $($process.ExitCode)." }
     $checks.Add('Graceful native host shutdown')
+    if ($helperPath) {
+        if (@(Get-HelperProcessIDs -Executable $helperPath).Count -ne 0 -or
+            @(Get-ChildItem -LiteralPath $temporaryDirectory -Directory -Filter 'cpa-account-warmup.*').Count -ne 0) {
+            throw 'The Intel Mac helper process or its private directory survived shutdown.'
+        }
+        $checks.Add('Intel Mac helper process exits and its private files are removed')
+    }
     $localStillRunning = $false
     try {
         $null = Invoke-SmokeRequest @localArguments -Path '/api/state' -Token $sessionToken

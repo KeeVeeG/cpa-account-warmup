@@ -51,11 +51,20 @@ platform_directory="$output_directory/$target_os-$target_arch"
 library_name="cpa-account-warmup.$extension"
 archive_path="$output_directory/cpa-account-warmup_${version}_${target_os}_${target_arch}.zip"
 mkdir -p -- "$platform_directory"
-build_arguments=(-trimpath -buildmode=c-shared)
+build_arguments=(-trimpath)
 if [[ -n "$repository_url" ]]; then
     build_arguments+=(-ldflags "-X=cpa-account-warmup/internal/plugin.RepositoryURL=$repository_url")
 fi
-CGO_ENABLED=1 go build "${build_arguments[@]}" -o "$platform_directory/$library_name" ./cmd/cpa-account-warmup
+if [[ "$target_os-$target_arch" == darwin-amd64 ]]; then
+    helper_path="$platform_directory/cpa-account-warmup-helper"
+    CGO_ENABLED=0 go build "${build_arguments[@]}" -o "$helper_path" ./cmd/cpa-account-warmup-helper
+    "${CC:-cc}" -arch x86_64 -std=c11 -O2 -Wall -Wextra -Werror -fvisibility=hidden -dynamiclib \
+        -I "$repository_root/cmd/cpa-account-warmup" \
+        -Wl,-sectcreate,__DATA,__warmup_helper,"$helper_path" \
+        -o "$platform_directory/$library_name" "$repository_root/native/darwin-amd64/shim.c"
+else
+    CGO_ENABLED=1 go build "${build_arguments[@]}" -buildmode=c-shared -o "$platform_directory/$library_name" ./cmd/cpa-account-warmup
+fi
 (
     cd -- "$platform_directory"
     "${checksum_command[@]}" "$library_name" > checksums.txt
