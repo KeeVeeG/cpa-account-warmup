@@ -6,7 +6,7 @@ Defaults: `claude-haiku-5-5` with thinking disabled and `gpt-6-luna` with low re
 
 ## Install
 
-Requires a local CLIProxyAPI **8.0.27+** core with native plugin support. Tested against 8.0.27.
+Requires a local CLIProxyAPI **8.0.27+** core with native plugin support. Tested against 8.0.27. Prebuilt packages require Windows 10+, macOS 15+, or Linux with glibc 2.34+.
 
 1. Download the ZIP for your OS and architecture from [Releases](https://github.com/KeeVeeG/cpa-account-warmup/releases/latest), then stop the core in EasyCLIProxyAPI.
 2. Copy the library into the core's plugin directory. On Windows x64: `cpa-core/plugins/windows/amd64/cpa-account-warmup.dll`. Keep this filename without a version suffix.
